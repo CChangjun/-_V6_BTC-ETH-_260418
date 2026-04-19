@@ -1,0 +1,1200 @@
+//@version=6
+indicator("창준지표V12 - BTC/ETH FVG", overlay=true, max_boxes_count=340, max_labels_count=280, max_lines_count=140)
+
+//=====================================================
+// Inputs
+//=====================================================
+grp_asset = "Asset / Engine"
+asset_mode = input.string("Auto", "Asset Mode", options=["Auto", "BTC", "ETH"], group=grp_asset)
+use_close_flip = input.bool(true, "IFVG Flip On Close Break", group=grp_asset)
+zone_expire_bars = input.int(220, "Zone Expire Bars", minval=20, maxval=5000, group=grp_asset)
+zone_extend_bars = input.int(120, "Zone Extend Bars", minval=10, maxval=2000, group=grp_asset)
+max_zones_per_tf = input.int(4, "Max Zones Per TF", minval=1, maxval=20, group=grp_asset)
+
+grp_tf = "Zone Timeframes"
+show_ctf_zones = input.bool(false, "Show Current TF Zones", group=grp_tf)
+show_h4_zones = input.bool(true, "Show 4H Zones", group=grp_tf)
+show_d_zones = input.bool(true, "Show 1D Zones", group=grp_tf)
+
+grp_quality = "Zone Quality"
+atr_len = input.int(14, "ATR Length", minval=1, group=grp_quality)
+min_gap_atr = input.float(0.18, "Min Gap ATR", minval=0.01, step=0.01, group=grp_quality)
+min_disp_atr = input.float(0.55, "Min Displacement ATR", minval=0.05, step=0.05, group=grp_quality)
+min_survival_score = input.float(0.35, "Min Survival Score", minval=0.0, maxval=1.0, step=0.05, group=grp_quality)
+
+grp_structure = "Structure / Signal"
+ema_fast_len = input.int(20, "EMA Fast", minval=1, group=grp_structure)
+ema_slow_len = input.int(50, "EMA Slow", minval=1, group=grp_structure)
+swing_len = input.int(5, "Pivot Length", minval=1, group=grp_structure)
+sweep_lookback = input.int(20, "Sweep Lookback", minval=5, group=grp_structure)
+setup_window = input.int(6, "Bars After Sweep", minval=1, maxval=20, group=grp_structure)
+vol_len = input.int(20, "Volume MA Length", minval=1, group=grp_structure)
+vol_mult = input.float(1.10, "Volume > Vol MA x", minval=0.1, step=0.05, group=grp_structure)
+zone_proximity_atr = input.float(0.70, "Zone Proximity ATR", minval=0.1, step=0.05, group=grp_structure)
+dealing_range_len = input.int(60, "Dealing Range Lookback", minval=20, group=grp_structure)
+min_entry_score = input.float(8.0, "Min Entry Score", minval=1.0, maxval=40.0, step=0.5, group=grp_structure)
+min_rr = input.float(1.8, "Min RR Proxy", minval=0.5, step=0.1, group=grp_structure)
+signal_cooldown_bars = input.int(12, "Signal Cooldown Bars", minval=1, maxval=200, group=grp_structure)
+
+grp_sweep = "Sweep Engine"
+show_major_sweeps = input.bool(true, "Show Major Sweeps", group=grp_sweep)
+show_qualified_minor_sweeps = input.bool(true, "Show Qualified Minor Sweeps", group=grp_sweep)
+show_raw_minor_sweeps = input.bool(false, "Show Raw Minor Sweeps", group=grp_sweep)
+major_sweep_factor = input.int(2, "Major Sweep Lookback Multiplier", minval=2, maxval=5, group=grp_sweep)
+sweep_min_excursion_atr = input.float(0.20, "Min Sweep Excursion ATR", minval=0.05, step=0.05, group=grp_sweep)
+sweep_reclaim_body_atr = input.float(0.15, "Min Reclaim Body ATR", minval=0.05, step=0.05, group=grp_sweep)
+qualified_minor_excursion_mult = input.float(1.15, "Qualified Minor Excursion Mult", minval=1.0, step=0.05, group=grp_sweep)
+qualified_minor_body_mult = input.float(1.10, "Qualified Minor Body Mult", minval=1.0, step=0.05, group=grp_sweep)
+
+grp_regime = "Regime / Re-arm"
+eff_len = input.int(12, "Efficiency Length", minval=5, maxval=100, group=grp_regime)
+eff_min = input.float(0.26, "Min Efficiency Ratio", minval=0.05, maxval=1.0, step=0.01, group=grp_regime)
+rearm_use_opposite_sweep = input.bool(true, "Re-arm On Opposite Sweep", group=grp_regime)
+rearm_use_ema_reset = input.bool(true, "Re-arm On EMA Reset", group=grp_regime)
+rearm_use_disp_reset = input.bool(true, "Re-arm On Opposite Displacement", group=grp_regime)
+
+grp_fin = "Financial Engineering"
+residual_tf = input.timeframe("240", "Residual TF", group=grp_fin)
+resid_beta_len = input.int(30, "Residual Beta Length", minval=10, maxval=200, group=grp_fin)
+resid_z_len = input.int(40, "Residual Z Length", minval=10, maxval=300, group=grp_fin)
+resid_z_threshold = input.float(0.20, "Residual Z Threshold", minval=0.0, step=0.05, group=grp_fin)
+vol_regime_len = input.int(20, "Vol Regime Length", minval=5, maxval=200, group=grp_fin)
+vol_z_len = input.int(60, "Vol Z Length", minval=10, maxval=300, group=grp_fin)
+vol_z_max = input.float(1.25, "Max Vol Z", minval=0.1, step=0.05, group=grp_fin)
+jump_atr_max = input.float(1.60, "Max Jump ATR", minval=0.2, step=0.05, group=grp_fin)
+semi_ratio_max = input.float(0.85, "Max Semi-Variance Ratio", minval=0.1, maxval=2.0, step=0.05, group=grp_fin)
+
+grp_archetype = "Entry Archetype"
+continuation_window = input.int(12, "Continuation Window", minval=2, maxval=100, group=grp_archetype)
+first_pullback_atr = input.float(0.60, "First Pullback ATR", minval=0.1, step=0.05, group=grp_archetype)
+late_dist_atr = input.float(1.10, "Late Entry Dist ATR", minval=0.2, step=0.05, group=grp_archetype)
+max_longs_per_bull_leg = input.int(1, "Max Longs Per Bull Leg", minval=1, maxval=5, group=grp_archetype)
+max_shorts_per_bear_leg = input.int(1, "Max Shorts Per Bear Leg", minval=1, maxval=5, group=grp_archetype)
+reversal_reject_min = input.float(1.00, "Reversal Rejection Min", minval=0.2, step=0.05, group=grp_archetype)
+continuation_react_min = input.float(1.00, "Continuation React Min", minval=0.2, step=0.05, group=grp_archetype)
+zone_hard_gate = input.float(0.45, "Zone Hard Gate", minval=0.0, maxval=1.0, step=0.05, group=grp_archetype)
+
+grp_v11 = "V11 Adaptive / Quant"
+use_slow_tf_relax = input.bool(true, "Relax Thresholds On 1D+", group=grp_v11)
+slow_tf_score_relax = input.float(1.5, "1D+ Score Relax", minval=0.0, step=0.25, group=grp_v11)
+slow_tf_zone_relax = input.float(0.10, "1D+ Zone Gate Relax", minval=0.0, step=0.05, group=grp_v11)
+slow_tf_reversal_relax = input.float(0.25, "1D+ Reversal Reject Relax", minval=0.0, step=0.05, group=grp_v11)
+slow_tf_cont_react_relax = input.float(0.25, "1D+ Continuation React Relax", minval=0.0, step=0.05, group=grp_v11)
+slow_tf_cont_window_mult = input.float(1.8, "1D+ Continuation Window Mult", minval=1.0, step=0.1, group=grp_v11)
+slow_tf_late_dist_mult = input.float(1.35, "1D+ Late Dist Mult", minval=1.0, step=0.05, group=grp_v11)
+slow_tf_pullback_mult = input.float(1.25, "1D+ Pullback ATR Mult", minval=1.0, step=0.05, group=grp_v11)
+slow_tf_leg_quota_add = input.int(1, "1D+ Extra Entries Per Leg", minval=0, maxval=5, group=grp_v11)
+slow_tf_rr_relax = input.float(0.30, "1D+ RR Relax", minval=0.0, step=0.05, group=grp_v11)
+
+liquidity_lookback = input.int(40, "Liquidity Density Lookback", minval=10, maxval=300, group=grp_v11)
+liquidity_band_atr = input.float(0.20, "Liquidity Band ATR", minval=0.05, step=0.05, group=grp_v11)
+liq_density_norm = input.float(3.0, "Liquidity Density Norm", minval=1.0, step=0.5, group=grp_v11)
+liq_minor_reversal_min = input.float(0.55, "Minor Sweep Density For Reversal", minval=0.0, maxval=1.0, step=0.05, group=grp_v11)
+
+disp_quality_min = input.float(1.15, "Displacement Quality Min", minval=0.2, step=0.05, group=grp_v11)
+disp_max_wick_frac = input.float(0.28, "Displacement Max Wick Fraction", minval=0.05, maxval=0.9, step=0.01, group=grp_v11)
+
+chop_len = input.int(14, "Chop / Compression Length", minval=5, maxval=100, group=grp_v11)
+chop_max = input.float(0.62, "Max Chop Score For Continuation", minval=0.1, maxval=1.0, step=0.01, group=grp_v11)
+
+grp_v12 = "V12 Path / Hazard / EV"
+path_reclaim_bonus = input.float(0.60, "Reclaim Path Bonus", minval=0.0, step=0.05, group=grp_v12)
+path_retest_bonus = input.float(0.45, "Retest Path Bonus", minval=0.0, step=0.05, group=grp_v12)
+path_grind_penalty = input.float(0.70, "Grind Path Penalty", minval=0.0, step=0.05, group=grp_v12)
+path_impulse_bonus = input.float(0.55, "Impulse Path Bonus", minval=0.0, step=0.05, group=grp_v12)
+hazard_touch_norm = input.float(4.0, "Hazard Touch Norm", minval=1.0, step=0.5, group=grp_v12)
+hazard_fill_weight = input.float(0.30, "Hazard Fill Weight", minval=0.0, step=0.05, group=grp_v12)
+hazard_touch_weight = input.float(0.25, "Hazard Touch Weight", minval=0.0, step=0.05, group=grp_v12)
+hazard_accept_weight = input.float(0.20, "Hazard Acceptance Weight", minval=0.0, step=0.05, group=grp_v12)
+hazard_survival_weight = input.float(0.25, "Hazard Survival Weight", minval=0.0, step=0.05, group=grp_v12)
+ev_sigmoid_slope = input.float(6.0, "EV Sigmoid Slope", minval=1.0, step=0.5, group=grp_v12)
+ev_min = input.float(0.10, "EV Proxy Min", minval=-1.0, maxval=5.0, step=0.05, group=grp_v12)
+
+grp_display = "Display"
+show_small_signals = input.bool(true, "Show Small Signals", group=grp_display)
+show_big_labels = input.bool(false, "Show Big Labels", group=grp_display)
+show_eq_line = input.bool(true, "Show Dealing Range EQ", group=grp_display)
+show_bg_bias = input.bool(false, "Show Background Bias", group=grp_display)
+show_zone_text = input.bool(true, "Show Zone Text", group=grp_display)
+
+//=====================================================
+// Asset Detection
+//=====================================================
+is_eth = asset_mode == "ETH" or (asset_mode == "Auto" and syminfo.basecurrency == "ETH")
+is_btc = asset_mode == "BTC" or (asset_mode == "Auto" and syminfo.basecurrency == "BTC")
+
+//=====================================================
+// Colors
+//=====================================================
+ctf_bull_bg = color.new(color.teal, 86)
+ctf_bear_bg = color.new(color.maroon, 86)
+ctf_bull_bd = color.new(color.teal, 10)
+ctf_bear_bd = color.new(color.maroon, 100)
+ctf_bull_txt = color.black
+ctf_bear_txt = color.black
+
+h4_bull_bg = color.new(color.yellow, 60)
+h4_bear_bg = color.new(color.blue, 88)
+h4_bull_bd = color.new(color.yellow, 100)
+h4_bear_bd = color.new(color.blue, 100)
+h4_bull_txt = color.black
+h4_bear_txt = color.black
+
+d_bull_bg = color.new(color.green, 72)
+d_bear_bg = color.new(color.red, 72)
+d_bull_bd = color.new(color.green, 100)
+d_bear_bd = color.new(color.red, 100)
+d_bull_txt = color.black
+d_bear_txt = color.black
+
+//=====================================================
+// Utility Functions
+//=====================================================
+f_clamp(_x, _lo, _hi) =>
+    math.max(_lo, math.min(_hi, _x))
+
+f_zone_text(_tf_name, _dir) =>
+    _tf_name + (_dir == 1 ? " BULL" : " BEAR")
+
+f_min_valid(_a, _b, _c) =>
+    float _m = na
+    if not na(_a)
+        _m := _a
+    if not na(_b)
+        _m := na(_m) ? _b : math.min(_m, _b)
+    if not na(_c)
+        _m := na(_m) ? _c : math.min(_m, _c)
+    _m
+
+f_pick_by_min_metric(_m1, _v1, _m2, _v2, _m3, _v3) =>
+    float _best_m = na
+    float _best_v = na
+    if not na(_m1) and not na(_v1)
+        _best_m := _m1
+        _best_v := _v1
+    if not na(_m2) and not na(_v2) and (na(_best_m) or _m2 < _best_m)
+        _best_m := _m2
+        _best_v := _v2
+    if not na(_m3) and not na(_v3) and (na(_best_m) or _m3 < _best_m)
+        _best_m := _m3
+        _best_v := _v3
+    _best_v
+
+f_init_quality(_gap_ratio, _disp_ratio, _min_gap, _min_disp) =>
+    float _gap_score = f_clamp(_gap_ratio / (_min_gap * 2.5), 0.0, 1.0)
+    float _disp_score = f_clamp(_disp_ratio / (_min_disp * 2.5), 0.0, 1.0)
+    0.45 * _gap_score + 0.55 * _disp_score
+
+f_add_zone(_boxes, _tops, _bottoms, _dirs, _flips, _born_times, _fills, _touches, _initq, _surv, _z_top, _z_bottom, _z_dir, _born_time, _right_time, _init_quality, _bg_bull, _bg_bear, _bd_bull, _bd_bear, _txt_bull, _txt_bear, _tf_name, _border_width, _max_keep, _show_zone_text) =>
+    if not na(_z_top) and not na(_z_bottom) and _z_top > _z_bottom
+        _bg = _z_dir == 1 ? _bg_bull : _bg_bear
+        _bd = _z_dir == 1 ? _bd_bull : _bd_bear
+        _txt_color = _z_dir == 1 ? _txt_bull : _txt_bear
+        _txt = _show_zone_text ? f_zone_text(_tf_name, _z_dir) : ""
+        _bx = box.new(left=_born_time, top=_z_top, right=_right_time, bottom=_z_bottom, xloc=xloc.bar_time, bgcolor=_bg, border_color=_bd, border_width=_border_width, text=_txt, text_color=_txt_color)
+
+        array.push(_boxes, _bx)
+        array.push(_tops, _z_top)
+        array.push(_bottoms, _z_bottom)
+        array.push(_dirs, _z_dir)
+        array.push(_flips, false)
+        array.push(_born_times, _born_time)
+        array.push(_fills, 0.0)
+        array.push(_touches, 0)
+        array.push(_initq, _init_quality)
+        array.push(_surv, _init_quality)
+
+        if array.size(_boxes) > _max_keep
+            _old = array.shift(_boxes)
+            box.delete(_old)
+            array.shift(_tops)
+            array.shift(_bottoms)
+            array.shift(_dirs)
+            array.shift(_flips)
+            array.shift(_born_times)
+            array.shift(_fills)
+            array.shift(_touches)
+            array.shift(_initq)
+            array.shift(_surv)
+
+f_update_zones(_boxes, _tops, _bottoms, _dirs, _flips, _born_times, _fills, _touches, _initq, _surv, _bg_bull, _bg_bear, _bd_bull, _bd_bear, _txt_bull, _txt_bear, _tf_name, _border_width, _use_close_flip, _right_time, _expire_ms, _show_zone_text) =>
+    int _bull_count = 0
+    int _bear_count = 0
+    bool _in_bull = false
+    bool _in_bear = false
+    float _best_bull_metric = 1000000000.0
+    float _best_bear_metric = 1000000000.0
+    float _best_bull_ref = na
+    float _best_bear_ref = na
+    float _best_bull_surv = na
+    float _best_bear_surv = na
+    float _best_bull_fill = na
+    float _best_bear_fill = na
+    float _best_bull_touches = na
+    float _best_bear_touches = na
+
+    if array.size(_boxes) > 0
+        int i = array.size(_boxes) - 1
+        while i >= 0
+            _bx = array.get(_boxes, i)
+            _zt = array.get(_tops, i)
+            _zb = array.get(_bottoms, i)
+            _zd = array.get(_dirs, i)
+            _zf = array.get(_flips, i)
+            _born_time = array.get(_born_times, i)
+            _fill_ratio_prev = array.get(_fills, i)
+            _touch_count = array.get(_touches, i)
+            _init_quality = array.get(_initq, i)
+
+            _age_ms = time - _born_time
+            _expired = _age_ms > _expire_ms
+
+            if _expired
+                box.delete(_bx)
+                array.remove(_boxes, i)
+                array.remove(_tops, i)
+                array.remove(_bottoms, i)
+                array.remove(_dirs, i)
+                array.remove(_flips, i)
+                array.remove(_born_times, i)
+                array.remove(_fills, i)
+                array.remove(_touches, i)
+                array.remove(_initq, i)
+                array.remove(_surv, i)
+            else
+                if _zd == 1
+                    _invalid_bull = _use_close_flip ? close < _zb : low < _zb
+                    if _invalid_bull
+                        _zd := -1
+                        _zf := true
+                        array.set(_dirs, i, _zd)
+                        array.set(_flips, i, _zf)
+
+                if _zd == -1
+                    _invalid_bear = _use_close_flip ? close > _zt : high > _zt
+                    if _invalid_bear
+                        _zd := 1
+                        _zf := true
+                        array.set(_dirs, i, _zd)
+                        array.set(_flips, i, _zf)
+
+                float _zone_height = math.max(_zt - _zb, syminfo.mintick)
+                float _fill_amount = _zd == 1 ? math.max(0.0, _zt - low) : math.max(0.0, high - _zb)
+                float _fill_ratio = f_clamp(_fill_amount / _zone_height, 0.0, 1.0)
+                float _stored_fill = math.max(_fill_ratio_prev, _fill_ratio)
+                array.set(_fills, i, _stored_fill)
+
+                _current_touch = high >= _zb and low <= _zt
+                _prev_touch = high[1] >= _zb and low[1] <= _zt
+
+                if _current_touch and not _prev_touch
+                    _touch_count := _touch_count + 1
+                    array.set(_touches, i, _touch_count)
+
+                float _touch_penalty = f_clamp((_touch_count - 1) * 0.25, 0.0, 0.75)
+                float _age_decay = f_clamp(_age_ms / _expire_ms, 0.0, 1.0)
+                float _survival = 0.40 * _init_quality + 0.30 * (1.0 - _stored_fill) + 0.15 * (1.0 - _age_decay) + 0.15 * (1.0 - _touch_penalty)
+
+                if _zf
+                    _survival := _survival * 0.75
+
+                _survival := f_clamp(_survival, 0.0, 1.0)
+                array.set(_surv, i, _survival)
+
+                _bg = _zd == 1 ? _bg_bull : _bg_bear
+                _bd = _zd == 1 ? _bd_bull : _bd_bear
+                _txt_color = _zd == 1 ? _txt_bull : _txt_bear
+                _txt = _show_zone_text ? f_zone_text(_tf_name, _zd) : ""
+
+                box.set_bgcolor(_bx, _bg)
+                box.set_border_color(_bx, _bd)
+                box.set_right(_bx, _right_time)
+                box.set_text(_bx, _txt)
+                box.set_text_color(_bx, _txt_color)
+
+                if _zd == 1
+                    _bull_count += 1
+                    _touch_bull = high >= _zb and low <= _zt
+                    _metric_bull = close > _zt ? close - _zt : close < _zb ? _zb - close : 0.0
+                    _in_bull := _in_bull or _touch_bull
+                    if _metric_bull < _best_bull_metric
+                        _best_bull_metric := _metric_bull
+                        _best_bull_ref := _zt
+                        _best_bull_surv := _survival
+                        _best_bull_fill := _stored_fill
+                        _best_bull_touches := _touch_count
+
+                if _zd == -1
+                    _bear_count += 1
+                    _touch_bear = high >= _zb and low <= _zt
+                    _metric_bear = close < _zb ? _zb - close : close > _zt ? close - _zt : 0.0
+                    _in_bear := _in_bear or _touch_bear
+                    if _metric_bear < _best_bear_metric
+                        _best_bear_metric := _metric_bear
+                        _best_bear_ref := _zb
+                        _best_bear_surv := _survival
+                        _best_bear_fill := _stored_fill
+                        _best_bear_touches := _touch_count
+
+            i := i - 1
+
+    _best_bull_metric := _best_bull_metric == 1000000000.0 ? na : _best_bull_metric
+    _best_bear_metric := _best_bear_metric == 1000000000.0 ? na : _best_bear_metric
+
+    [_bull_count, _bear_count, _in_bull, _in_bear, _best_bull_metric, _best_bear_metric, _best_bull_ref, _best_bear_ref, _best_bull_surv, _best_bear_surv, _best_bull_fill, _best_bear_fill, _best_bull_touches, _best_bear_touches]
+
+//=====================================================
+// Time Anchors
+//=====================================================
+int ctf_ms = int(math.max(nz(time - time[1], 60000), 60000))
+int h4_ms = 14400000
+int d_ms = 86400000
+
+int ctf_right_time = time + ctf_ms * zone_extend_bars
+int h4_right_time = time + h4_ms * zone_extend_bars
+int d_right_time = time + d_ms * zone_extend_bars
+
+int ctf_expire_ms = ctf_ms * zone_expire_bars
+int h4_expire_ms = h4_ms * zone_expire_bars
+int d_expire_ms = d_ms * zone_expire_bars
+
+//=====================================================
+// Zone Storage
+//=====================================================
+var ctf_boxes = array.new_box()
+var ctf_tops = array.new_float()
+var ctf_bottoms = array.new_float()
+var ctf_dirs = array.new_int()
+var ctf_flips = array.new_bool()
+var ctf_born_times = array.new_int()
+var ctf_fills = array.new_float()
+var ctf_touches = array.new_int()
+var ctf_initq = array.new_float()
+var ctf_surv = array.new_float()
+
+var h4_boxes = array.new_box()
+var h4_tops = array.new_float()
+var h4_bottoms = array.new_float()
+var h4_dirs = array.new_int()
+var h4_flips = array.new_bool()
+var h4_born_times = array.new_int()
+var h4_fills = array.new_float()
+var h4_touches = array.new_int()
+var h4_initq = array.new_float()
+var h4_surv = array.new_float()
+
+var d_boxes = array.new_box()
+var d_tops = array.new_float()
+var d_bottoms = array.new_float()
+var d_dirs = array.new_int()
+var d_flips = array.new_bool()
+var d_born_times = array.new_int()
+var d_fills = array.new_float()
+var d_touches = array.new_int()
+var d_initq = array.new_float()
+var d_surv = array.new_float()
+
+//=====================================================
+// Current TF Core
+//=====================================================
+ema_fast = ta.ema(close, ema_fast_len)
+ema_slow = ta.ema(close, ema_slow_len)
+atr_val = ta.atr(atr_len)
+vol_ma = ta.sma(volume, vol_len)
+
+range_hi = ta.highest(high, dealing_range_len)
+range_lo = ta.lowest(low, dealing_range_len)
+eq_line = (range_hi + range_lo) * 0.5
+in_discount = close < eq_line
+in_premium = close > eq_line
+
+ctf_bias = ema_fast > ema_slow and close > ema_fast ? 1 : ema_fast < ema_slow and close < ema_fast ? -1 : 0
+
+pivot_high = ta.pivothigh(high, swing_len, swing_len)
+pivot_low = ta.pivotlow(low, swing_len, swing_len)
+
+var float last_swing_high = na
+var float last_swing_low = na
+
+if not na(pivot_high)
+    last_swing_high := pivot_high
+
+if not na(pivot_low)
+    last_swing_low := pivot_low
+
+bos_bull = not na(last_swing_high) and ta.crossover(close, last_swing_high)
+bos_bear = not na(last_swing_low) and ta.crossunder(close, last_swing_low)
+
+real_body = math.abs(close - open)
+bull_disp = close > open and real_body > atr_val * min_disp_atr and close > high[1] and volume > vol_ma * vol_mult
+bear_disp = close < open and real_body > atr_val * min_disp_atr and close < low[1] and volume > vol_ma * vol_mult
+
+eff_num = bar_index >= eff_len ? math.abs(close - close[eff_len]) : 0.0
+eff_den = nz(math.sum(math.abs(close - close[1]), eff_len), 0.0)
+ctf_eff = eff_den > 0 ? eff_num / eff_den : 0.0
+
+is_slow_tf = timeframe.isdaily or timeframe.isweekly or timeframe.ismonthly
+
+min_entry_score_act = use_slow_tf_relax and is_slow_tf ? math.max(5.0, min_entry_score - slow_tf_score_relax) : min_entry_score
+zone_hard_gate_act = use_slow_tf_relax and is_slow_tf ? math.max(0.20, zone_hard_gate - slow_tf_zone_relax) : zone_hard_gate
+reversal_reject_min_act = use_slow_tf_relax and is_slow_tf ? math.max(0.40, reversal_reject_min - slow_tf_reversal_relax) : reversal_reject_min
+continuation_react_min_act = use_slow_tf_relax and is_slow_tf ? math.max(0.40, continuation_react_min - slow_tf_cont_react_relax) : continuation_react_min
+
+continuation_window_act = use_slow_tf_relax and is_slow_tf ? int(math.round(continuation_window * slow_tf_cont_window_mult)) : continuation_window
+late_dist_atr_act = use_slow_tf_relax and is_slow_tf ? late_dist_atr * slow_tf_late_dist_mult : late_dist_atr
+first_pullback_atr_act = use_slow_tf_relax and is_slow_tf ? first_pullback_atr * slow_tf_pullback_mult : first_pullback_atr
+
+max_longs_per_bull_leg_act = use_slow_tf_relax and is_slow_tf ? max_longs_per_bull_leg + slow_tf_leg_quota_add : max_longs_per_bull_leg
+max_shorts_per_bear_leg_act = use_slow_tf_relax and is_slow_tf ? max_shorts_per_bear_leg + slow_tf_leg_quota_add : max_shorts_per_bear_leg
+min_rr_act = use_slow_tf_relax and is_slow_tf ? math.max(1.2, min_rr - slow_tf_rr_relax) : min_rr
+ev_min_act = use_slow_tf_relax and is_slow_tf ? math.max(0.0, ev_min - 0.05) : ev_min
+
+bar_range = math.max(high - low, syminfo.mintick)
+upper_wick = high - math.max(open, close)
+lower_wick = math.min(open, close) - low
+body_frac = real_body / bar_range
+
+bull_disp_quality = 0.0
+bull_disp_quality += close > open ? f_clamp(body_frac, 0.0, 1.0) : 0.0
+bull_disp_quality += close > high[1] ? 0.40 : 0.0
+bull_disp_quality += volume > vol_ma * vol_mult ? 0.30 : 0.0
+bull_disp_quality += upper_wick / bar_range <= disp_max_wick_frac ? 0.20 : -0.10
+bull_disp_quality += low >= low[1] ? 0.10 : 0.0
+
+bear_disp_quality = 0.0
+bear_disp_quality += close < open ? f_clamp(body_frac, 0.0, 1.0) : 0.0
+bear_disp_quality += close < low[1] ? 0.40 : 0.0
+bear_disp_quality += volume > vol_ma * vol_mult ? 0.30 : 0.0
+bear_disp_quality += lower_wick / bar_range <= disp_max_wick_frac ? 0.20 : -0.10
+bear_disp_quality += high <= high[1] ? 0.10 : 0.0
+
+overlap_raw = math.max(0.0, math.min(high, high[1]) - math.max(low, low[1]))
+prev_range = math.max(high[1] - low[1], syminfo.mintick)
+overlap_ratio = overlap_raw / prev_range
+
+wick_ratio = (upper_wick + lower_wick) / bar_range
+dir_now = close > close[1] ? 1 : close < close[1] ? -1 : 0
+dir_prev = close[1] > close[2] ? 1 : close[1] < close[2] ? -1 : 0
+flip_event = dir_now != 0 and dir_prev != 0 and dir_now != dir_prev
+flip_freq = math.sum(flip_event ? 1.0 : 0.0, chop_len) / chop_len
+
+net_move = bar_index >= chop_len ? math.abs(close - close[chop_len]) : 0.0
+gross_move = nz(math.sum(math.abs(close - close[1]), chop_len), 0.0)
+path_eff = gross_move > 0 ? net_move / gross_move : 0.0
+
+compression_score = f_clamp(0.30 * wick_ratio + 0.25 * overlap_ratio + 0.25 * flip_freq + 0.20 * (1.0 - path_eff), 0.0, 1.0)
+trend_clarity = 1.0 - compression_score
+continuation_chop_block = compression_score > chop_max
+
+//=====================================================
+// Financial Engineering Layer
+//=====================================================
+log_ret = close[1] > 0 ? math.log(close / close[1]) : 0.0
+rv = ta.stdev(log_ret, vol_regime_len)
+rv_mean = ta.sma(rv, vol_z_len)
+rv_std = ta.stdev(rv, vol_z_len)
+vol_z = not na(rv_std) and rv_std > 0 ? (rv - rv_mean) / rv_std : 0.0
+
+neg_sq = log_ret < 0 ? log_ret * log_ret : 0.0
+pos_sq = log_ret > 0 ? log_ret * log_ret : 0.0
+downside_var = math.sum(neg_sq, vol_regime_len) / vol_regime_len
+upside_var = math.sum(pos_sq, vol_regime_len) / vol_regime_len
+downside_vol = math.sqrt(downside_var)
+upside_vol = math.sqrt(upside_var)
+
+downside_ratio = rv > 0 ? downside_vol / rv : 0.0
+upside_ratio = rv > 0 ? upside_vol / rv : 0.0
+jump_proxy = atr_val > 0 ? math.abs(close - close[1]) / atr_val : 0.0
+
+[eth_usdt_close_res, eth_usdt_prev_res] = request.security("BINANCE:ETHUSDT", residual_tf, [close, close[1]])
+[btc_usdt_close_res, btc_usdt_prev_res] = request.security("BINANCE:BTCUSDT", residual_tf, [close, close[1]])
+[ethbtc_close, ethbtc_fast, ethbtc_slow] = request.security("BINANCE:ETHBTC", residual_tf, [close, ta.ema(close, 20), ta.ema(close, 50)])
+[btc_guard_close, btc_guard_fast, btc_guard_slow] = request.security("BINANCE:BTCUSDT", residual_tf, [close, ta.ema(close, 20), ta.ema(close, 50)])
+
+eth_res_ret = eth_usdt_prev_res > 0 ? math.log(eth_usdt_close_res / eth_usdt_prev_res) : 0.0
+btc_res_ret = btc_usdt_prev_res > 0 ? math.log(btc_usdt_close_res / btc_usdt_prev_res) : 0.0
+
+ret_corr = ta.correlation(eth_res_ret, btc_res_ret, resid_beta_len)
+eth_ret_std = ta.stdev(eth_res_ret, resid_beta_len)
+btc_ret_std = ta.stdev(btc_res_ret, resid_beta_len)
+beta_est = not na(btc_ret_std) and btc_ret_std > 0 ? nz(ret_corr, 0.0) * eth_ret_std / btc_ret_std : 0.0
+
+eth_residual = eth_res_ret - beta_est * btc_res_ret
+resid_mean = ta.sma(eth_residual, resid_z_len)
+resid_std = ta.stdev(eth_residual, resid_z_len)
+resid_z = not na(resid_std) and resid_std > 0 ? (eth_residual - resid_mean) / resid_std : 0.0
+
+eth_rs_bull = ethbtc_fast > ethbtc_slow and ethbtc_close > ethbtc_fast
+eth_rs_bear = ethbtc_fast < ethbtc_slow and ethbtc_close < ethbtc_fast
+btc_guard_bull = btc_guard_fast > btc_guard_slow and btc_guard_close > btc_guard_fast
+btc_guard_bear = btc_guard_fast < btc_guard_slow and btc_guard_close < btc_guard_fast
+
+eth_filter_long = not is_eth or (eth_rs_bull and resid_z > resid_z_threshold and not btc_guard_bear)
+eth_filter_short = not is_eth or (eth_rs_bear and resid_z < -resid_z_threshold and not btc_guard_bull)
+
+long_regime_score = 0.0
+long_regime_score += ctf_bias != -1 ? 0.5 : -0.5
+long_regime_score += ctf_eff >= eff_min ? 0.75 : -0.5
+long_regime_score += vol_z <= vol_z_max ? 0.75 : -1.0
+long_regime_score += jump_proxy <= jump_atr_max ? 0.75 : -1.0
+long_regime_score += downside_ratio <= semi_ratio_max ? 0.50 : -0.50
+
+short_regime_score = 0.0
+short_regime_score += ctf_bias != 1 ? 0.5 : -0.5
+short_regime_score += ctf_eff >= eff_min ? 0.75 : -0.5
+short_regime_score += vol_z <= vol_z_max ? 0.75 : -1.0
+short_regime_score += jump_proxy <= jump_atr_max ? 0.75 : -1.0
+short_regime_score += upside_ratio <= semi_ratio_max ? 0.50 : -0.50
+
+//=====================================================
+// Sweep Engine
+//=====================================================
+major_lookback = sweep_lookback * major_sweep_factor
+
+minor_low_ref = ta.lowest(low, sweep_lookback)[1]
+minor_high_ref = ta.highest(high, sweep_lookback)[1]
+
+major_low_ref = ta.lowest(low, major_lookback)[1]
+major_high_ref = ta.highest(high, major_lookback)[1]
+
+bull_reclaim_body = close - open
+bear_reclaim_body = open - close
+
+bull_minor_excursion_atr = not na(minor_low_ref) and low < minor_low_ref ? (minor_low_ref - low) / atr_val : na
+bear_minor_excursion_atr = not na(minor_high_ref) and high > minor_high_ref ? (high - minor_high_ref) / atr_val : na
+
+bull_major_excursion_atr = not na(major_low_ref) and low < major_low_ref ? (major_low_ref - low) / atr_val : na
+bear_major_excursion_atr = not na(major_high_ref) and high > major_high_ref ? (high - major_high_ref) / atr_val : na
+
+bull_minor_sweep_raw = (
+    not na(minor_low_ref) and
+    low < minor_low_ref and
+    close > minor_low_ref and
+    bull_reclaim_body >= atr_val * sweep_reclaim_body_atr and
+    not na(bull_minor_excursion_atr) and
+    bull_minor_excursion_atr >= sweep_min_excursion_atr
+)
+
+bear_minor_sweep_raw = (
+    not na(minor_high_ref) and
+    high > minor_high_ref and
+    close < minor_high_ref and
+    bear_reclaim_body >= atr_val * sweep_reclaim_body_atr and
+    not na(bear_minor_excursion_atr) and
+    bear_minor_excursion_atr >= sweep_min_excursion_atr
+)
+
+bull_major_sweep = (
+    not na(major_low_ref) and
+    low < major_low_ref and
+    close > major_low_ref and
+    bull_reclaim_body >= atr_val * sweep_reclaim_body_atr and
+    not na(bull_major_excursion_atr) and
+    bull_major_excursion_atr >= sweep_min_excursion_atr
+)
+
+bear_major_sweep = (
+    not na(major_high_ref) and
+    high > major_high_ref and
+    close < major_high_ref and
+    bear_reclaim_body >= atr_val * sweep_reclaim_body_atr and
+    not na(bear_major_excursion_atr) and
+    bear_major_excursion_atr >= sweep_min_excursion_atr
+)
+
+//=====================================================
+// HTF Requests
+//=====================================================
+[h4_time, h4_close, h4_ema_fast, h4_ema_slow, h4_low1, h4_high3, h4_low3, h4_high1, h4_atr1, h4_disp1] = request.security(syminfo.tickerid, "240", [time, close, ta.ema(close, ema_fast_len), ta.ema(close, ema_slow_len), low[1], high[3], low[3], high[1], ta.atr(atr_len)[1], math.abs(close[1] - open[1])])
+
+[d_time, d_close, d_ema_fast, d_ema_slow, d_low1, d_high3, d_low3, d_high1, d_atr1, d_disp1] = request.security(syminfo.tickerid, "D", [time, close, ta.ema(close, ema_fast_len), ta.ema(close, ema_slow_len), low[1], high[3], low[3], high[1], ta.atr(atr_len)[1], math.abs(close[1] - open[1])])
+
+//=====================================================
+// HTF Derived Values
+//=====================================================
+h4_new_bar = nz(ta.change(h4_time)) != 0
+d_new_bar = nz(ta.change(d_time)) != 0
+
+h4_bias = h4_ema_fast > h4_ema_slow and h4_close > h4_ema_fast ? 1 : h4_ema_fast < h4_ema_slow and h4_close < h4_ema_fast ? -1 : 0
+d_bias = d_ema_fast > d_ema_slow and d_close > d_ema_fast ? 1 : d_ema_fast < d_ema_slow and d_close < d_ema_fast ? -1 : 0
+
+h4_bull_gap = h4_low1 - h4_high3
+h4_bear_gap = h4_low3 - h4_high1
+
+d_bull_gap = d_low1 - d_high3
+d_bear_gap = d_low3 - d_high1
+
+//=====================================================
+// FVG Creation
+//=====================================================
+bull_gap_ctf = low - high[2]
+bear_gap_ctf = low[2] - high
+
+bull_ctf_ready = barstate.isconfirmed and bar_index > 2 and low > high[2] and bull_gap_ctf >= atr_val * min_gap_atr and math.abs(close[1] - open[1]) >= atr_val[1] * min_disp_atr
+bear_ctf_ready = barstate.isconfirmed and bar_index > 2 and high < low[2] and bear_gap_ctf >= atr_val * min_gap_atr and math.abs(close[1] - open[1]) >= atr_val[1] * min_disp_atr
+
+ctf_bull_init_q = f_init_quality(bull_gap_ctf / atr_val, math.abs(close[1] - open[1]) / atr_val[1], min_gap_atr, min_disp_atr)
+ctf_bear_init_q = f_init_quality(bear_gap_ctf / atr_val, math.abs(close[1] - open[1]) / atr_val[1], min_gap_atr, min_disp_atr)
+
+h4_bull_init_q = f_init_quality(h4_bull_gap / h4_atr1, h4_disp1 / h4_atr1, min_gap_atr, min_disp_atr)
+h4_bear_init_q = f_init_quality(h4_bear_gap / h4_atr1, h4_disp1 / h4_atr1, min_gap_atr, min_disp_atr)
+
+d_bull_init_q = f_init_quality(d_bull_gap / d_atr1, d_disp1 / d_atr1, min_gap_atr, min_disp_atr)
+d_bear_init_q = f_init_quality(d_bear_gap / d_atr1, d_disp1 / d_atr1, min_gap_atr, min_disp_atr)
+
+if show_ctf_zones and bull_ctf_ready
+    f_add_zone(ctf_boxes, ctf_tops, ctf_bottoms, ctf_dirs, ctf_flips, ctf_born_times, ctf_fills, ctf_touches, ctf_initq, ctf_surv, low, high[2], 1, time, ctf_right_time, ctf_bull_init_q, ctf_bull_bg, ctf_bear_bg, ctf_bull_bd, ctf_bear_bd, ctf_bull_txt, ctf_bear_txt, "CTF", 1, max_zones_per_tf, show_zone_text)
+
+if show_ctf_zones and bear_ctf_ready
+    f_add_zone(ctf_boxes, ctf_tops, ctf_bottoms, ctf_dirs, ctf_flips, ctf_born_times, ctf_fills, ctf_touches, ctf_initq, ctf_surv, low[2], high, -1, time, ctf_right_time, ctf_bear_init_q, ctf_bull_bg, ctf_bear_bg, ctf_bull_bd, ctf_bear_bd, ctf_bull_txt, ctf_bear_txt, "CTF", 1, max_zones_per_tf, show_zone_text)
+
+if show_h4_zones and h4_new_bar and h4_low1 > h4_high3 and h4_bull_gap >= h4_atr1 * min_gap_atr and h4_disp1 >= h4_atr1 * min_disp_atr
+    f_add_zone(h4_boxes, h4_tops, h4_bottoms, h4_dirs, h4_flips, h4_born_times, h4_fills, h4_touches, h4_initq, h4_surv, h4_low1, h4_high3, 1, h4_time, h4_right_time, h4_bull_init_q, h4_bull_bg, h4_bear_bg, h4_bull_bd, h4_bear_bd, h4_bull_txt, h4_bear_txt, "4H", 1, max_zones_per_tf, show_zone_text)
+
+if show_h4_zones and h4_new_bar and h4_high1 < h4_low3 and h4_bear_gap >= h4_atr1 * min_gap_atr and h4_disp1 >= h4_atr1 * min_disp_atr
+    f_add_zone(h4_boxes, h4_tops, h4_bottoms, h4_dirs, h4_flips, h4_born_times, h4_fills, h4_touches, h4_initq, h4_surv, h4_low3, h4_high1, -1, h4_time, h4_right_time, h4_bear_init_q, h4_bull_bg, h4_bear_bg, h4_bull_bd, h4_bear_bd, h4_bull_txt, h4_bear_txt, "4H", 1, max_zones_per_tf, show_zone_text)
+
+if show_d_zones and d_new_bar and d_low1 > d_high3 and d_bull_gap >= d_atr1 * min_gap_atr and d_disp1 >= d_atr1 * min_disp_atr
+    f_add_zone(d_boxes, d_tops, d_bottoms, d_dirs, d_flips, d_born_times, d_fills, d_touches, d_initq, d_surv, d_low1, d_high3, 1, d_time, d_right_time, d_bull_init_q, d_bull_bg, d_bear_bg, d_bull_bd, d_bear_bd, d_bull_txt, d_bear_txt, "1D", 2, max_zones_per_tf, show_zone_text)
+
+if show_d_zones and d_new_bar and d_high1 < d_low3 and d_bear_gap >= d_atr1 * min_gap_atr and d_disp1 >= d_atr1 * min_disp_atr
+    f_add_zone(d_boxes, d_tops, d_bottoms, d_dirs, d_flips, d_born_times, d_fills, d_touches, d_initq, d_surv, d_low3, d_high1, -1, d_time, d_right_time, d_bear_init_q, d_bull_bg, d_bear_bg, d_bull_bd, d_bear_bd, d_bull_txt, d_bear_txt, "1D", 2, max_zones_per_tf, show_zone_text)
+
+//=====================================================
+// Zone Update / Metrics
+//=====================================================
+[ctf_bull_cnt, ctf_bear_cnt, ctf_in_bull, ctf_in_bear, ctf_bull_metric, ctf_bear_metric, ctf_bull_ref, ctf_bear_ref, ctf_bull_surv_best, ctf_bear_surv_best, ctf_bull_fill_best, ctf_bear_fill_best, ctf_bull_touch_best, ctf_bear_touch_best] = f_update_zones(
+    ctf_boxes, ctf_tops, ctf_bottoms, ctf_dirs, ctf_flips, ctf_born_times, ctf_fills, ctf_touches, ctf_initq, ctf_surv,
+    ctf_bull_bg, ctf_bear_bg, ctf_bull_bd, ctf_bear_bd, ctf_bull_txt, ctf_bear_txt, "CTF", 1,
+    use_close_flip, ctf_right_time, ctf_expire_ms, show_zone_text
+)
+
+[h4_bull_cnt, h4_bear_cnt, h4_in_bull, h4_in_bear, h4_bull_metric, h4_bear_metric, h4_bull_ref, h4_bear_ref, h4_bull_surv_best, h4_bear_surv_best, h4_bull_fill_best, h4_bear_fill_best, h4_bull_touch_best, h4_bear_touch_best] = f_update_zones(
+    h4_boxes, h4_tops, h4_bottoms, h4_dirs, h4_flips, h4_born_times, h4_fills, h4_touches, h4_initq, h4_surv,
+    h4_bull_bg, h4_bear_bg, h4_bull_bd, h4_bear_bd, h4_bull_txt, h4_bear_txt, "4H", 1,
+    use_close_flip, h4_right_time, h4_expire_ms, show_zone_text
+)
+
+[d_bull_cnt, d_bear_cnt, d_in_bull, d_in_bear, d_bull_metric, d_bear_metric, d_bull_ref, d_bear_ref, d_bull_surv_best, d_bear_surv_best, d_bull_fill_best, d_bear_fill_best, d_bull_touch_best, d_bear_touch_best] = f_update_zones(
+    d_boxes, d_tops, d_bottoms, d_dirs, d_flips, d_born_times, d_fills, d_touches, d_initq, d_surv,
+    d_bull_bg, d_bear_bg, d_bull_bd, d_bear_bd, d_bull_txt, d_bear_txt, "1D", 2,
+    use_close_flip, d_right_time, d_expire_ms, show_zone_text
+)
+
+bull_zone_count = ctf_bull_cnt + h4_bull_cnt + d_bull_cnt
+bear_zone_count = ctf_bear_cnt + h4_bear_cnt + d_bear_cnt
+
+any_bull_touch = ctf_in_bull or h4_in_bull or d_in_bull
+any_bear_touch = ctf_in_bear or h4_in_bear or d_in_bear
+
+near_bull_metric_all = f_min_valid(ctf_bull_metric, h4_bull_metric, d_bull_metric)
+near_bear_metric_all = f_min_valid(ctf_bear_metric, h4_bear_metric, d_bear_metric)
+
+near_bull_ref_all = f_pick_by_min_metric(ctf_bull_metric, ctf_bull_ref, h4_bull_metric, h4_bull_ref, d_bull_metric, d_bull_ref)
+near_bear_ref_all = f_pick_by_min_metric(ctf_bear_metric, ctf_bear_ref, h4_bear_metric, h4_bear_ref, d_bear_metric, d_bear_ref)
+
+near_bull_surv_all = f_pick_by_min_metric(ctf_bull_metric, ctf_bull_surv_best, h4_bull_metric, h4_bull_surv_best, d_bull_metric, d_bull_surv_best)
+near_bear_surv_all = f_pick_by_min_metric(ctf_bear_metric, ctf_bear_surv_best, h4_bear_metric, h4_bear_surv_best, d_bear_metric, d_bear_surv_best)
+
+near_bull_fill_all = f_pick_by_min_metric(ctf_bull_metric, ctf_bull_fill_best, h4_bull_metric, h4_bull_fill_best, d_bull_metric, d_bull_fill_best)
+near_bear_fill_all = f_pick_by_min_metric(ctf_bear_metric, ctf_bear_fill_best, h4_bear_metric, h4_bear_fill_best, d_bear_metric, d_bear_fill_best)
+
+near_bull_touches_all = f_pick_by_min_metric(ctf_bull_metric, ctf_bull_touch_best, h4_bull_metric, h4_bull_touch_best, d_bull_metric, d_bull_touch_best)
+near_bear_touches_all = f_pick_by_min_metric(ctf_bear_metric, ctf_bear_touch_best, h4_bear_metric, h4_bear_touch_best, d_bear_metric, d_bear_touch_best)
+
+bull_zone_quality = nz(near_bull_surv_all, 0.0)
+bear_zone_quality = nz(near_bear_surv_all, 0.0)
+
+bull_proximity = not na(near_bull_metric_all) and near_bull_metric_all <= atr_val * zone_proximity_atr
+bear_proximity = not na(near_bear_metric_all) and near_bear_metric_all <= atr_val * zone_proximity_atr
+
+liq_band = atr_val * liquidity_band_atr
+
+low_cluster_hits = not na(major_low_ref) ? math.sum(math.abs(low - major_low_ref) <= liq_band ? 1.0 : 0.0, liquidity_lookback) : 0.0
+high_cluster_hits = not na(major_high_ref) ? math.sum(math.abs(high - major_high_ref) <= liq_band ? 1.0 : 0.0, liquidity_lookback) : 0.0
+
+bull_liq_density = f_clamp((low_cluster_hits - 1.0) / liq_density_norm, 0.0, 1.0)
+bear_liq_density = f_clamp((high_cluster_hits - 1.0) / liq_density_norm, 0.0, 1.0)
+
+//=====================================================
+// Qualified Sweep Layer
+//=====================================================
+bull_minor_sweep = bull_minor_sweep_raw and (
+    (not na(bull_minor_excursion_atr) and bull_minor_excursion_atr >= sweep_min_excursion_atr * qualified_minor_excursion_mult) or
+    (bull_reclaim_body >= atr_val * sweep_reclaim_body_atr * qualified_minor_body_mult and ctf_eff >= eff_min) or
+    (bull_proximity and bull_zone_quality >= min_survival_score)
+)
+
+bear_minor_sweep = bear_minor_sweep_raw and (
+    (not na(bear_minor_excursion_atr) and bear_minor_excursion_atr >= sweep_min_excursion_atr * qualified_minor_excursion_mult) or
+    (bear_reclaim_body >= atr_val * sweep_reclaim_body_atr * qualified_minor_body_mult and ctf_eff >= eff_min) or
+    (bear_proximity and bear_zone_quality >= min_survival_score)
+)
+
+bull_sweep = bull_major_sweep or bull_minor_sweep
+bear_sweep = bear_major_sweep or bear_minor_sweep
+
+bars_since_bull_major_sweep = ta.barssince(bull_major_sweep)
+bars_since_bear_major_sweep = ta.barssince(bear_major_sweep)
+bars_since_bull_minor_sweep = ta.barssince(bull_minor_sweep)
+bars_since_bear_minor_sweep = ta.barssince(bear_minor_sweep)
+
+recent_bull_major_sweep = not na(bars_since_bull_major_sweep) and bars_since_bull_major_sweep <= setup_window
+recent_bear_major_sweep = not na(bars_since_bear_major_sweep) and bars_since_bear_major_sweep <= setup_window
+recent_bull_minor_sweep = not na(bars_since_bull_minor_sweep) and bars_since_bull_minor_sweep <= setup_window
+recent_bear_minor_sweep = not na(bars_since_bear_minor_sweep) and bars_since_bear_minor_sweep <= setup_window
+
+recent_bull_sweep = recent_bull_major_sweep or recent_bull_minor_sweep
+recent_bear_sweep = recent_bear_major_sweep or recent_bear_minor_sweep
+
+//=====================================================
+// Re-arm / Leg Counters
+//=====================================================
+var bool long_armed = true
+var bool short_armed = true
+var int last_long_signal_bar = na
+var int last_short_signal_bar = na
+var int bull_leg_long_count = 0
+var int bear_leg_short_count = 0
+
+bull_leg_event = bull_major_sweep or bos_bull
+bear_leg_event = bear_major_sweep or bos_bear
+
+if bull_leg_event
+    bull_leg_long_count := 0
+
+if bear_leg_event
+    bear_leg_short_count := 0
+
+long_reset_condition = (
+    (rearm_use_opposite_sweep and (recent_bear_major_sweep or recent_bear_minor_sweep)) or
+    (rearm_use_ema_reset and close < ema_fast) or
+    (rearm_use_disp_reset and bear_disp)
+)
+
+short_reset_condition = (
+    (rearm_use_opposite_sweep and (recent_bull_major_sweep or recent_bull_minor_sweep)) or
+    (rearm_use_ema_reset and close > ema_fast) or
+    (rearm_use_disp_reset and bull_disp)
+)
+
+if long_reset_condition
+    long_armed := true
+
+if short_reset_condition
+    short_armed := true
+
+long_cooldown_ok = na(last_long_signal_bar) or bar_index - last_long_signal_bar > signal_cooldown_bars
+short_cooldown_ok = na(last_short_signal_bar) or bar_index - last_short_signal_bar > signal_cooldown_bars
+
+//=====================================================
+// Acceptance / Rejection
+//=====================================================
+bull_rejection_score = 0.0
+bull_acceptance_penalty = 0.0
+if bull_proximity and not na(near_bull_ref_all)
+    bull_rejection_score += low <= near_bull_ref_all and close > near_bull_ref_all ? 1.0 : 0.0
+    bull_rejection_score += bull_reclaim_body >= atr_val * sweep_reclaim_body_atr ? 0.5 : 0.0
+    bull_rejection_score += volume > vol_ma * vol_mult ? 0.25 : 0.0
+    bull_acceptance_penalty += close < near_bull_ref_all and bear_disp ? 0.75 : 0.0
+    bull_acceptance_penalty += close < near_bull_ref_all and volume > vol_ma * vol_mult ? 0.25 : 0.0
+
+bear_rejection_score = 0.0
+bear_acceptance_penalty = 0.0
+if bear_proximity and not na(near_bear_ref_all)
+    bear_rejection_score += high >= near_bear_ref_all and close < near_bear_ref_all ? 1.0 : 0.0
+    bear_rejection_score += bear_reclaim_body >= atr_val * sweep_reclaim_body_atr ? 0.5 : 0.0
+    bear_rejection_score += volume > vol_ma * vol_mult ? 0.25 : 0.0
+    bear_acceptance_penalty += close > near_bear_ref_all and bull_disp ? 0.75 : 0.0
+    bear_acceptance_penalty += close > near_bear_ref_all and volume > vol_ma * vol_mult ? 0.25 : 0.0
+
+//=====================================================
+// Hazard-style Zone Failure
+//=====================================================
+bull_fill_risk = nz(near_bull_fill_all, 0.0)
+bear_fill_risk = nz(near_bear_fill_all, 0.0)
+bull_touch_risk = f_clamp(nz(near_bull_touches_all, 0.0) / hazard_touch_norm, 0.0, 1.0)
+bear_touch_risk = f_clamp(nz(near_bear_touches_all, 0.0) / hazard_touch_norm, 0.0, 1.0)
+
+bull_zone_hazard = f_clamp(
+    hazard_survival_weight * (1.0 - bull_zone_quality) +
+    hazard_fill_weight * bull_fill_risk +
+    hazard_touch_weight * bull_touch_risk +
+    hazard_accept_weight * f_clamp(bull_acceptance_penalty, 0.0, 1.0),
+    0.0, 1.0
+)
+
+bear_zone_hazard = f_clamp(
+    hazard_survival_weight * (1.0 - bear_zone_quality) +
+    hazard_fill_weight * bear_fill_risk +
+    hazard_touch_weight * bear_touch_risk +
+    hazard_accept_weight * f_clamp(bear_acceptance_penalty, 0.0, 1.0),
+    0.0, 1.0
+)
+
+bull_zone_stability = 1.0 - bull_zone_hazard
+bear_zone_stability = 1.0 - bear_zone_hazard
+
+//=====================================================
+// Approach / Reaction Quality
+//=====================================================
+bull_grind_penalty = bull_proximity and close < close[1] and close[1] < close[2] and volume < vol_ma
+bear_grind_penalty = bear_proximity and close > close[1] and close[1] > close[2] and volume < vol_ma
+
+bull_sweep_score = bull_major_sweep ? 2.0 + bull_liq_density : bull_minor_sweep ? 0.85 + bull_liq_density * 0.35 : bull_minor_sweep_raw ? 0.20 : 0.0
+bear_sweep_score = bear_major_sweep ? 2.0 + bear_liq_density : bear_minor_sweep ? 0.85 + bear_liq_density * 0.35 : bear_minor_sweep_raw ? 0.20 : 0.0
+
+bull_approach_score = 0.0
+bull_approach_score += recent_bull_major_sweep ? 2.0 : recent_bull_minor_sweep ? 0.85 : 0.0
+bull_approach_score += bull_proximity ? 0.5 : 0.0
+bull_approach_score += ctf_eff >= eff_min ? 0.50 : -0.25
+bull_approach_score += bull_zone_quality > 0.70 ? 1.0 : bull_zone_quality > 0.50 ? 0.5 : bull_zone_quality < min_survival_score ? -1.0 : 0.0
+bull_approach_score -= bull_grind_penalty ? 1.0 : 0.0
+bull_approach_score += trend_clarity >= 0.45 ? 0.35 : -0.50
+
+bear_approach_score = 0.0
+bear_approach_score += recent_bear_major_sweep ? 2.0 : recent_bear_minor_sweep ? 0.85 : 0.0
+bear_approach_score += bear_proximity ? 0.5 : 0.0
+bear_approach_score += ctf_eff >= eff_min ? 0.50 : -0.25
+bear_approach_score += bear_zone_quality > 0.70 ? 1.0 : bear_zone_quality > 0.50 ? 0.5 : bear_zone_quality < min_survival_score ? -1.0 : 0.0
+bear_approach_score -= bear_grind_penalty ? 1.0 : 0.0
+bear_approach_score += trend_clarity >= 0.45 ? 0.35 : -0.50
+
+bull_reaction_score = 0.0
+bull_reaction_score += any_bull_touch and close > open ? 1.0 : 0.0
+bull_reaction_score += close > ema_fast ? 0.5 : -0.5
+bull_reaction_score += bull_disp ? 1.0 : 0.0
+bull_reaction_score += volume > vol_ma * vol_mult ? 0.5 : 0.0
+bull_reaction_score += bull_sweep_score > 0 ? 0.25 : 0.0
+bull_reaction_score += bull_rejection_score
+bull_reaction_score += bull_disp_quality >= disp_quality_min ? 0.75 : bull_disp_quality >= 0.85 ? 0.30 : 0.0
+bull_reaction_score -= bear_disp ? 1.0 : 0.0
+bull_reaction_score -= bull_acceptance_penalty
+bull_reaction_score -= not na(near_bull_ref_all) and close < near_bull_ref_all ? 0.50 : 0.0
+
+bear_reaction_score = 0.0
+bear_reaction_score += any_bear_touch and close < open ? 1.0 : 0.0
+bear_reaction_score += close < ema_fast ? 0.5 : -0.5
+bear_reaction_score += bear_disp ? 1.0 : 0.0
+bear_reaction_score += volume > vol_ma * vol_mult ? 0.5 : 0.0
+bear_reaction_score += bear_sweep_score > 0 ? 0.25 : 0.0
+bear_reaction_score += bear_rejection_score
+bear_reaction_score += bear_disp_quality >= disp_quality_min ? 0.75 : bear_disp_quality >= 0.85 ? 0.30 : 0.0
+bear_reaction_score -= bull_disp ? 1.0 : 0.0
+bear_reaction_score -= bear_acceptance_penalty
+bear_reaction_score -= not na(near_bear_ref_all) and close > near_bear_ref_all ? 0.50 : 0.0
+
+//=====================================================
+// Zone Interaction Path
+//=====================================================
+bull_reclaim_path = recent_bull_sweep and bull_proximity and bull_rejection_score > 0
+bear_reclaim_path = recent_bear_sweep and bear_proximity and bear_rejection_score > 0
+
+bull_retest_path = bull_proximity and close > ema_fast and low <= nz(near_bull_ref_all, low)
+bear_retest_path = bear_proximity and close < ema_fast and high >= nz(near_bear_ref_all, high)
+
+bull_impulse_path = not na(ta.barssince(bull_disp)) and ta.barssince(bull_disp) <= 3 and bull_proximity
+bear_impulse_path = not na(ta.barssince(bear_disp)) and ta.barssince(bear_disp) <= 3 and bear_proximity
+
+bull_grind_path = bull_proximity and close < close[1] and close[1] < close[2] and ctf_eff < eff_min
+bear_grind_path = bear_proximity and close > close[1] and close[1] > close[2] and ctf_eff < eff_min
+
+bull_path_score = 0.0
+bull_path_score += bull_reclaim_path ? path_reclaim_bonus : 0.0
+bull_path_score += bull_retest_path ? path_retest_bonus : 0.0
+bull_path_score += bull_impulse_path ? path_impulse_bonus : 0.0
+bull_path_score -= bull_grind_path ? path_grind_penalty : 0.0
+bull_path_score += bull_liq_density * 0.35
+bull_path_score += bull_zone_stability * 0.35
+
+bear_path_score = 0.0
+bear_path_score += bear_reclaim_path ? path_reclaim_bonus : 0.0
+bear_path_score += bear_retest_path ? path_retest_bonus : 0.0
+bear_path_score += bear_impulse_path ? path_impulse_bonus : 0.0
+bear_path_score -= bear_grind_path ? path_grind_penalty : 0.0
+bear_path_score += bear_liq_density * 0.35
+bear_path_score += bear_zone_stability * 0.35
+
+//=====================================================
+// Archetype Engine
+//=====================================================
+bull_impulse_event = bull_major_sweep or bos_bull or bull_disp
+bear_impulse_event = bear_major_sweep or bos_bear or bear_disp
+
+bars_since_bull_impulse = ta.barssince(bull_impulse_event)
+bars_since_bear_impulse = ta.barssince(bear_impulse_event)
+
+dist_fast_atr = atr_val > 0 ? math.abs(close - ema_fast) / atr_val : 0.0
+
+long_late_penalty = 0.0
+long_late_penalty += dist_fast_atr > late_dist_atr_act ? 1.0 : 0.0
+long_late_penalty += in_premium ? 0.75 : 0.0
+long_late_penalty += not na(bars_since_bull_impulse) and bars_since_bull_impulse > continuation_window_act ? 1.0 : 0.0
+long_late_penalty += bull_leg_long_count > 0 ? 1.25 : 0.0
+
+short_late_penalty = 0.0
+short_late_penalty += dist_fast_atr > late_dist_atr_act ? 1.0 : 0.0
+short_late_penalty += in_discount ? 0.75 : 0.0
+short_late_penalty += not na(bars_since_bear_impulse) and bars_since_bear_impulse > continuation_window_act ? 1.0 : 0.0
+short_late_penalty += bear_leg_short_count > 0 ? 1.25 : 0.0
+
+continuation_long_ready = (
+    ctf_bias == 1 and
+    h4_bias == 1 and
+    d_bias != -1 and
+    bull_zone_quality >= zone_hard_gate_act and
+    bull_proximity and
+    not continuation_chop_block and
+    not na(bars_since_bull_impulse) and
+    bars_since_bull_impulse <= continuation_window_act and
+    dist_fast_atr <= first_pullback_atr_act and
+    bull_reaction_score >= continuation_react_min_act and
+    bull_disp_quality >= disp_quality_min and
+    bull_path_score >= 0.35 and
+    bull_leg_long_count < max_longs_per_bull_leg_act and
+    long_late_penalty <= 1.0
+)
+
+continuation_short_ready = (
+    ctf_bias == -1 and
+    h4_bias == -1 and
+    d_bias != 1 and
+    bear_zone_quality >= zone_hard_gate_act and
+    bear_proximity and
+    not continuation_chop_block and
+    not na(bars_since_bear_impulse) and
+    bars_since_bear_impulse <= continuation_window_act and
+    dist_fast_atr <= first_pullback_atr_act and
+    bear_reaction_score >= continuation_react_min_act and
+    bear_disp_quality >= disp_quality_min and
+    bear_path_score >= 0.35 and
+    bear_leg_short_count < max_shorts_per_bear_leg_act and
+    short_late_penalty <= 1.0
+)
+
+reversal_long_ready = (
+    (recent_bull_major_sweep or (recent_bull_minor_sweep and bull_liq_density >= liq_minor_reversal_min)) and
+    bull_zone_quality >= zone_hard_gate_act and
+    bull_zone_stability >= 0.35 and
+    (bull_rejection_score + bull_liq_density * 0.75) >= reversal_reject_min_act and
+    bull_acceptance_penalty <= 0.25 and
+    bull_path_score >= 0.20 and
+    in_discount and
+    h4_bias != -1 and
+    d_bias != -1
+)
+
+reversal_short_ready = (
+    (recent_bear_major_sweep or (recent_bear_minor_sweep and bear_liq_density >= liq_minor_reversal_min)) and
+    bear_zone_quality >= zone_hard_gate_act and
+    bear_zone_stability >= 0.35 and
+    (bear_rejection_score + bear_liq_density * 0.75) >= reversal_reject_min_act and
+    bear_acceptance_penalty <= 0.25 and
+    bear_path_score >= 0.20 and
+    in_premium and
+    h4_bias != 1 and
+    d_bias != 1
+)
+
+long_reversal_score = 0.0
+long_reversal_score += bull_zone_quality * 2.0
+long_reversal_score += bull_zone_stability * 1.4
+long_reversal_score += bull_rejection_score * 1.5
+long_reversal_score += bull_liq_density * 1.0
+long_reversal_score += bull_path_score * 1.2
+long_reversal_score += recent_bull_major_sweep ? 1.8 : recent_bull_minor_sweep ? 0.65 : 0.0
+long_reversal_score += in_discount ? 1.0 : 0.0
+long_reversal_score += long_regime_score
+long_reversal_score += is_eth ? (eth_filter_long ? 1.0 : -2.0) : 0.0
+long_reversal_score -= bull_acceptance_penalty
+long_reversal_score -= bull_zone_hazard * 1.1
+long_reversal_score -= long_late_penalty * 0.4
+
+short_reversal_score = 0.0
+short_reversal_score += bear_zone_quality * 2.0
+short_reversal_score += bear_zone_stability * 1.4
+short_reversal_score += bear_rejection_score * 1.5
+short_reversal_score += bear_liq_density * 1.0
+short_reversal_score += bear_path_score * 1.2
+short_reversal_score += recent_bear_major_sweep ? 1.8 : recent_bear_minor_sweep ? 0.65 : 0.0
+short_reversal_score += in_premium ? 1.0 : 0.0
+short_reversal_score += short_regime_score
+short_reversal_score += is_eth ? (eth_filter_short ? 1.0 : -2.0) : 0.0
+short_reversal_score -= bear_acceptance_penalty
+short_reversal_score -= bear_zone_hazard * 1.1
+short_reversal_score -= short_late_penalty * 0.4
+
+long_continuation_score = 0.0
+long_continuation_score += bull_zone_quality * 1.8
+long_continuation_score += bull_zone_stability * 1.2
+long_continuation_score += bull_approach_score
+long_continuation_score += bull_reaction_score
+long_continuation_score += bull_path_score * 0.9
+long_continuation_score += long_regime_score
+long_continuation_score += continuation_long_ready ? 1.5 : 0.0
+long_continuation_score += is_eth ? (eth_filter_long ? 1.0 : -2.0) : 0.0
+long_continuation_score -= bull_zone_hazard * 0.9
+long_continuation_score -= long_late_penalty
+
+short_continuation_score = 0.0
+short_continuation_score += bear_zone_quality * 1.8
+short_continuation_score += bear_zone_stability * 1.2
+short_continuation_score += bear_approach_score
+short_continuation_score += bear_reaction_score
+short_continuation_score += bear_path_score * 0.9
+short_continuation_score += short_regime_score
+short_continuation_score += continuation_short_ready ? 1.5 : 0.0
+short_continuation_score += is_eth ? (eth_filter_short ? 1.0 : -2.0) : 0.0
+short_continuation_score -= bear_zone_hazard * 0.9
+short_continuation_score -= short_late_penalty
+
+long_mode_reversal = reversal_long_ready and long_reversal_score >= min_entry_score_act
+long_mode_continuation = continuation_long_ready and long_continuation_score >= min_entry_score_act
+short_mode_reversal = reversal_short_ready and short_reversal_score >= min_entry_score_act
+short_mode_continuation = continuation_short_ready and short_continuation_score >= min_entry_score_act
+
+//=====================================================
+// Risk / RR Proxy
+//=====================================================
+long_sl = math.min(low, nz(last_swing_low, low)) - atr_val * 0.25
+short_sl = math.max(high, nz(last_swing_high, high)) + atr_val * 0.25
+
+long_risk = close - long_sl
+short_risk = short_sl - close
+
+long_target_proxy = not na(near_bear_ref_all) and near_bear_ref_all > close ? near_bear_ref_all : close + long_risk * 2.2
+short_target_proxy = not na(near_bull_ref_all) and near_bull_ref_all < close ? near_bull_ref_all : close - short_risk * 2.2
+
+rr_long = long_risk > syminfo.mintick ? (long_target_proxy - close) / long_risk : na
+rr_short = short_risk > syminfo.mintick ? (close - short_target_proxy) / short_risk : na
+
+rr_long_ok_act = not na(rr_long) and rr_long >= min_rr_act
+rr_short_ok_act = not na(rr_short) and rr_short >= min_rr_act
+
+long_quality_core = 0.24 * bull_zone_stability + 0.16 * bull_liq_density + 0.16 * f_clamp(bull_disp_quality / 2.0, 0.0, 1.0) + 0.14 * trend_clarity + 0.14 * f_clamp((long_regime_score + 1.5) / 4.0, 0.0, 1.0) + 0.16 * f_clamp((bull_path_score + 1.0) / 3.0, 0.0, 1.0)
+short_quality_core = 0.24 * bear_zone_stability + 0.16 * bear_liq_density + 0.16 * f_clamp(bear_disp_quality / 2.0, 0.0, 1.0) + 0.14 * trend_clarity + 0.14 * f_clamp((short_regime_score + 1.5) / 4.0, 0.0, 1.0) + 0.16 * f_clamp((bear_path_score + 1.0) / 3.0, 0.0, 1.0)
+
+long_pwin_proxy = 1.0 / (1.0 + math.exp(-ev_sigmoid_slope * (long_quality_core - 0.50)))
+short_pwin_proxy = 1.0 / (1.0 + math.exp(-ev_sigmoid_slope * (short_quality_core - 0.50)))
+
+long_reward_proxy = not na(rr_long) ? math.max(rr_long, 0.0) : na
+short_reward_proxy = not na(rr_short) ? math.max(rr_short, 0.0) : na
+
+long_risk_proxy = 1.0 + bull_zone_hazard * 1.1 + compression_score * 0.7 + long_late_penalty * 0.35
+short_risk_proxy = 1.0 + bear_zone_hazard * 1.1 + compression_score * 0.7 + short_late_penalty * 0.35
+
+ev_long = not na(long_reward_proxy) ? long_pwin_proxy * long_reward_proxy - (1.0 - long_pwin_proxy) * long_risk_proxy : na
+ev_short = not na(short_reward_proxy) ? short_pwin_proxy * short_reward_proxy - (1.0 - short_pwin_proxy) * short_risk_proxy : na
+
+ev_long_ok = not na(ev_long) and ev_long >= ev_min_act
+ev_short_ok = not na(ev_short) and ev_short >= ev_min_act
+
+//=====================================================
+// Final Signals
+//=====================================================
+long_signal_raw = (
+    barstate.isconfirmed and
+    long_armed and
+    long_cooldown_ok and
+    rr_long_ok_act and
+    ev_long_ok and
+    bull_zone_quality >= zone_hard_gate_act and
+    ((long_mode_reversal and long_reversal_score >= min_entry_score_act) or (long_mode_continuation and long_continuation_score >= min_entry_score_act))
+)
+
+short_signal_raw = (
+    barstate.isconfirmed and
+    short_armed and
+    short_cooldown_ok and
+    rr_short_ok_act and
+    ev_short_ok and
+    bear_zone_quality >= zone_hard_gate_act and
+    ((short_mode_reversal and short_reversal_score >= min_entry_score_act) or (short_mode_continuation and short_continuation_score >= min_entry_score_act))
+)
+
+long_signal = long_signal_raw and not long_signal_raw[1]
+short_signal = short_signal_raw and not short_signal_raw[1] and not long_signal
+
+if long_signal
+    last_long_signal_bar := bar_index
+    long_armed := false
+    bull_leg_long_count := bull_leg_long_count + 1
+
+if short_signal
+    last_short_signal_bar := bar_index
+    short_armed := false
+    bear_leg_short_count := bear_leg_short_count + 1
+
+//=====================================================
+// Visuals
+//=====================================================
+plot(ema_fast, "EMA Fast", color=color.orange, linewidth=2)
+plot(ema_slow, "EMA Slow", color=color.blue, linewidth=2)
+plot(show_eq_line ? eq_line : na, "EQ", color=color.new(color.yellow, 5), linewidth=1)
+
+bgcolor(
+    show_bg_bias ?
+    (h4_bias == 1 and d_bias == 1 ? color.new(color.green, 93) :
+     h4_bias == -1 and d_bias == -1 ? color.new(color.red, 93) : na)
+    : na
+)
+
+plotshape(show_small_signals and long_signal, title="Long Small", style=shape.triangleup, location=location.belowbar, size=size.tiny, color=color.lime, text="L")
+plotshape(show_small_signals and short_signal, title="Short Small", style=shape.triangledown, location=location.abovebar, size=size.tiny, color=color.red, text="S")
+
+plotshape(show_major_sweeps and bull_major_sweep, title="Bull Major Sweep", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.new(color.green, 0), text="MSWP")
+plotshape(show_major_sweeps and bear_major_sweep, title="Bear Major Sweep", style=shape.circle, location=location.abovebar, size=size.tiny, color=color.new(color.red, 0), text="MSWP")
+
+plotshape(show_qualified_minor_sweeps and bull_minor_sweep and not bull_major_sweep, title="Bull Qualified Minor Sweep", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.new(color.green, 15), text="SWP")
+plotshape(show_qualified_minor_sweeps and bear_minor_sweep and not bear_major_sweep, title="Bear Qualified Minor Sweep", style=shape.circle, location=location.abovebar, size=size.tiny, color=color.new(color.red, 15), text="SWP")
+
+plotshape(show_raw_minor_sweeps and bull_minor_sweep_raw and not bull_minor_sweep and not bull_major_sweep, title="Bull Raw Minor Sweep", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.new(color.green, 55), text="m")
+plotshape(show_raw_minor_sweeps and bear_minor_sweep_raw and not bear_minor_sweep and not bear_major_sweep, title="Bear Raw Minor Sweep", style=shape.circle, location=location.abovebar, size=size.tiny, color=color.new(color.red, 55), text="m")
+
+if show_big_labels and long_signal
+    _long_mode = long_mode_reversal ? "REV" : long_mode_continuation ? "CONT" : "NA"
+    _long_score = long_mode_reversal ? long_reversal_score : long_continuation_score
+    label.new(
+         bar_index,
+         low,
+         "LONG " + _long_mode +
+         "\nScore: " + str.tostring(_long_score, "#.##") +
+         "\nSurv: " + str.tostring(bull_zone_quality, "#.##") +
+         "\nHaz: " + str.tostring(bull_zone_hazard, "#.##") +
+         "\nPath: " + str.tostring(bull_path_score, "#.##") +
+         "\nLiq: " + str.tostring(bull_liq_density, "#.##") +
+         "\nDispQ: " + str.tostring(bull_disp_quality, "#.##") +
+         "\nResidZ: " + str.tostring(resid_z, "#.##") +
+         "\nEV: " + str.tostring(ev_long, "#.##") +
+         "\nRR: " + str.tostring(rr_long, "#.##"),
+         style=label.style_label_up,
+         textcolor=color.white,
+         color=color.new(color.green, 0)
+     )
+
+if show_big_labels and short_signal
+    _short_mode = short_mode_reversal ? "REV" : short_mode_continuation ? "CONT" : "NA"
+    _short_score = short_mode_reversal ? short_reversal_score : short_continuation_score
+    label.new(
+         bar_index,
+         high,
+         "SHORT " + _short_mode +
+         "\nScore: " + str.tostring(_short_score, "#.##") +
+         "\nSurv: " + str.tostring(bear_zone_quality, "#.##") +
+         "\nHaz: " + str.tostring(bear_zone_hazard, "#.##") +
+         "\nPath: " + str.tostring(bear_path_score, "#.##") +
+         "\nLiq: " + str.tostring(bear_liq_density, "#.##") +
+         "\nDispQ: " + str.tostring(bear_disp_quality, "#.##") +
+         "\nResidZ: " + str.tostring(resid_z, "#.##") +
+         "\nEV: " + str.tostring(ev_short, "#.##") +
+         "\nRR: " + str.tostring(rr_short, "#.##"),
+         style=label.style_label_down,
+         textcolor=color.white,
+         color=color.new(color.red, 0)
+     )
+
+//=====================================================
+// Alerts
+//=====================================================
+alertcondition(long_signal, title="Long Signal", message="창준지표V12 LONG")
+alertcondition(short_signal, title="Short Signal", message="창준지표V12 SHORT")
