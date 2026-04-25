@@ -1,0 +1,566 @@
+//@version=5
+indicator("KRX 외인 자금 흐름 v3 - ", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=50)
+
+// =====================================================
+// Quant-only model
+// - No ICT logic
+// - KRX daily stock + KOSPI/KOSPI200 macro-flow framework
+// - Foreign-flow proxy + probability + regime + risk filter
+// =====================================================
+
+// ========================= GROUPS =========================
+grp_symbol = "Symbols"
+grp_macro = "Macro"
+grp_flow = "Flow"
+grp_quant = "Quant"
+grp_prob = "Probability"
+grp_signal = "Signal"
+grp_plot = "Plots"
+grp_table = "Table"
+
+// ========================= SYMBOLS =========================
+// Default target is Hyundai Motor common stock.
+sym_target = input.symbol("KRX:005380", "Target Stock", group=grp_symbol)
+sym_kospi = input.symbol("KRX:KOSPI", "KOSPI", group=grp_symbol)
+sym_k200 = input.symbol("KRX:KOSPI200", "KOSPI200", group=grp_symbol)
+sym_kosdaq = input.symbol("KRX:KOSDAQ", "KOSDAQ", group=grp_symbol)
+sym_usdkrw = input.symbol("FX_IDC:USDKRW", "USDKRW", group=grp_symbol)
+sym_dxy = input.symbol("TVC:DXY", "DXY", group=grp_symbol)
+sym_vix = input.symbol("CBOE:VIX", "VIX", group=grp_symbol)
+sym_spx = input.symbol("SP:SPX", "SPX", group=grp_symbol)
+sym_ndx = input.symbol("NASDAQ:NDX", "NDX", group=grp_symbol)
+sym_fut1 = input.symbol("KRX:K2IH2026", "KOSPI200 Future 1", group=grp_symbol)
+sym_fut2 = input.symbol("KRX:K2IM2026", "KOSPI200 Future 2", group=grp_symbol)
+sym_fut3 = input.symbol("KRX:K2IU2026", "KOSPI200 Future 3", group=grp_symbol)
+
+// ========================= INPUTS =========================
+len_fast = input.int(20, "Fast MA", minval=2, group=grp_macro)
+len_mid = input.int(50, "Mid MA", minval=5, group=grp_macro)
+len_slow = input.int(120, "Slow MA", minval=10, group=grp_macro)
+len_rs = input.int(26, "RS Lookback", minval=5, group=grp_macro)
+len_z = input.int(52, "Zscore Lookback", minval=10, group=grp_macro)
+len_vol = input.int(20, "Volume Lookback", minval=5, group=grp_macro)
+len_corr = input.int(30, "Correlation Lookback", minval=10, group=grp_macro)
+len_rv = input.int(20, "Realized Vol Lookback", minval=5, group=grp_macro)
+len_draw = input.int(60, "Drawdown Lookback", minval=10, group=grp_macro)
+len_impulse = input.int(10, "Impulse Lookback", minval=3, group=grp_macro)
+len_resid = input.int(40, "Residual Lookback", minval=10, group=grp_macro)
+
+ewma_lambda = input.float(0.94, "EWMA Lambda", minval=0.50, maxval=0.999, step=0.001, group=grp_quant)
+barrier_horizon = input.int(10, "Barrier Horizon", minval=2, maxval=60, group=grp_quant)
+barrier_move = input.float(0.06, "Barrier Move", minval=0.01, maxval=0.30, step=0.005, group=grp_quant)
+markov_alpha = input.float(0.75, "Markov Persistence Weight", minval=0.05, maxval=0.99, step=0.01, group=grp_quant)
+ou_speed = input.float(0.20, "OU Mean-Reversion Speed", minval=0.01, maxval=1.0, step=0.01, group=grp_quant)
+kelly_fraction = input.float(0.25, "Kelly Fraction", minval=0.0, maxval=1.0, step=0.01, group=grp_quant)
+kelly_cap = input.float(0.20, "Kelly Cap", minval=0.0, maxval=1.0, step=0.01, group=grp_quant)
+
+flow_w_fx = input.float(1.00, "Flow Weight FX", step=0.1, group=grp_flow)
+flow_w_basis = input.float(1.00, "Flow Weight Basis", step=0.1, group=grp_flow)
+flow_w_large = input.float(1.00, "Flow Weight LargeCap RS", step=0.1, group=grp_flow)
+flow_w_risk = input.float(0.90, "Flow Weight Risk RS", step=0.1, group=grp_flow)
+flow_w_local = input.float(0.90, "Flow Weight Local Stress", step=0.1, group=grp_flow)
+flow_w_macro = input.float(0.90, "Flow Weight Macro Stress", step=0.1, group=grp_flow)
+flow_w_relative = input.float(0.80, "Flow Weight Relative Weakness", step=0.1, group=grp_flow)
+flow_w_stock = input.float(1.10, "Flow Weight Stock RS", step=0.1, group=grp_flow)
+flow_w_corr = input.float(0.80, "Flow Weight Corr Breakdown", step=0.1, group=grp_flow)
+flow_w_volume = input.float(0.70, "Flow Weight Volume Stress", step=0.1, group=grp_flow)
+
+prob_slope = input.float(1.75, "Probability Slope", step=0.05, group=grp_prob)
+prob_bias = input.float(0.0, "Probability Bias", step=0.05, group=grp_prob)
+rebound_bias = input.float(0.0, "Rebound Bias", step=0.05, group=grp_prob)
+trend_bias = input.float(0.0, "Trend Bias", step=0.05, group=grp_prob)
+risk_enter = input.float(0.62, "RiskOff Enter Prob", minval=0.05, maxval=0.99, step=0.01, group=grp_prob)
+risk_exit = input.float(0.38, "RiskOff Exit Prob", minval=0.01, maxval=0.95, step=0.01, group=grp_prob)
+long_enter = input.float(0.60, "Long Enter Prob", minval=0.05, maxval=0.99, step=0.01, group=grp_prob)
+short_enter = input.float(0.60, "Short Enter Prob", minval=0.05, maxval=0.99, step=0.01, group=grp_prob)
+trend_floor = input.float(0.52, "Trend Floor", minval=0.05, maxval=0.99, step=0.01, group=grp_prob)
+chop_ceiling = input.float(0.58, "Chop Ceiling", minval=0.05, maxval=0.99, step=0.01, group=grp_prob)
+posterior_floor = input.float(0.55, "Posterior Floor", minval=0.05, maxval=0.99, step=0.01, group=grp_prob)
+breakdown_floor = input.float(0.58, "Breakdown Floor", minval=0.05, maxval=0.99, step=0.01, group=grp_prob)
+
+cooldown_bars = input.int(20, "Signal Cooldown", minval=1, maxval=300, group=grp_signal)
+confirm_window = input.int(5, "Confirm Window", minval=1, maxval=50, group=grp_signal)
+score_enter = input.float(4.0, "Score Enter", step=0.25, group=grp_signal)
+score_reset = input.float(1.5, "Score Reset", step=0.25, group=grp_signal)
+
+show_exit = input.bool(true, "Show Exit", group=grp_plot)
+show_rebound = input.bool(true, "Show Entry", group=grp_plot)
+show_trend = input.bool(false, "Show Trend Diagnostics", group=grp_plot)
+show_short = input.bool(false, "Show Short Diagnostics", group=grp_plot)
+show_bg = input.bool(true, "Show Background", group=grp_plot)
+show_scores = input.bool(false, "Show Score Plots", group=grp_plot)
+
+show_table = input.bool(true, "Show Diagnostics Table", group=grp_table)
+table_pos = input.string("Top Right", "Table Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grp_table)
+
+// ========================= UTILS =========================
+f_clamp(x, lo, hi) =>
+    math.max(lo, math.min(hi, x))
+
+f_sigmoid(x) =>
+    1.0 / (1.0 + math.exp(-x))
+
+f_logit(p) =>
+    pp = f_clamp(p, 0.001, 0.999)
+    math.log(pp / (1.0 - pp))
+
+f_prob(x, slope, bias) =>
+    1.0 / (1.0 + math.exp(-(x * slope + bias)))
+
+f_nzdiv(a, b) =>
+    b == 0.0 ? 0.0 : a / b
+
+f_bool(x) =>
+    x ? 1.0 : 0.0
+
+f_z(x, n) =>
+    m = ta.sma(x, n)
+    s = ta.stdev(x, n)
+    s == 0.0 ? 0.0 : (x - m) / s
+
+f_ma_state(x, fastLen, midLen, slowLen) =>
+    ma1 = ta.sma(x, fastLen)
+    ma2 = ta.sma(x, midLen)
+    ma3 = ta.sma(x, slowLen)
+    bull = ma1 > ma2 and ma2 > ma3
+    bear = ma1 < ma2 and ma2 < ma3
+    [ma1, ma2, ma3, bull, bear]
+
+f_logret(x) =>
+    x[1] == 0.0 ? 0.0 : math.log(x / x[1])
+
+f_realized_vol(ret, n) =>
+    ta.stdev(ret, n) * math.sqrt(252.0)
+
+f_downside_vol(ret, n) =>
+    dn = ret < 0 ? ret : 0.0
+    ta.stdev(dn, n) * math.sqrt(252.0)
+
+f_upside_vol(ret, n) =>
+    up = ret > 0 ? ret : 0.0
+    ta.stdev(up, n) * math.sqrt(252.0)
+
+f_drawdown(px, n) =>
+    hh = ta.highest(px, n)
+    hh == 0.0 ? 0.0 : 1.0 - px / hh
+
+f_rebound_strength(px, maFast, maMid) =>
+    a = px > maFast ? 1.0 : 0.0
+    b = maFast > maMid ? 1.0 : 0.0
+    c = px > px[1] ? 1.0 : 0.0
+    0.4 * a + 0.35 * b + 0.25 * c
+
+f_trend_strength(px, maFast, maMid, maSlow) =>
+    a = px > maFast ? 1.0 : 0.0
+    b = maFast > maMid ? 1.0 : 0.0
+    c = maMid > maSlow ? 1.0 : 0.0
+    d = maFast > maFast[5] ? 1.0 : 0.0
+    0.25 * a + 0.25 * b + 0.25 * c + 0.25 * d
+
+f_chop_proxy(px, n) =>
+    net = math.abs(px - px[n])
+    gross = math.sum(math.abs(px - px[1]), n)
+    gross == 0.0 ? 1.0 : 1.0 - net / gross
+
+f_prob_color(p) =>
+    p >= 0.75 ? color.rgb(170, 0, 0) : p >= 0.60 ? color.rgb(220, 80, 0) : p >= 0.45 ? color.rgb(180, 140, 0) : color.rgb(0, 110, 0)
+
+f_table_pos(pos) =>
+    pos == "Top Left" ? position.top_left : pos == "Bottom Right" ? position.bottom_right : pos == "Bottom Left" ? position.bottom_left : position.top_right
+
+f_rank_bucket(x) =>
+    x >= 0.80 ? 5 : x >= 0.65 ? 4 : x >= 0.50 ? 3 : x >= 0.35 ? 2 : 1
+
+f_hit_up_prob(mu, sigma, t, a) =>
+    sig2 = math.max(sigma * sigma, 0.0000001)
+    sigt = math.max(sigma * math.sqrt(math.max(t, 0.0001)), 0.0001)
+    x1 = (mu * t - a) / sigt
+    x2 = (-mu * t - a) / sigt
+    expo = math.max(-50.0, math.min(50.0, 2.0 * mu * a / sig2))
+    term = math.exp(expo)
+    cdf1 = f_sigmoid(1.702 * x1)
+    cdf2 = f_sigmoid(1.702 * x2)
+    f_clamp(cdf1 + term * cdf2, 0.0, 1.0)
+
+f_hit_down_prob(mu, sigma, t, a) =>
+    sig2 = math.max(sigma * sigma, 0.0000001)
+    sigt = math.max(sigma * math.sqrt(math.max(t, 0.0001)), 0.0001)
+    x1 = (-mu * t - a) / sigt
+    x2 = (mu * t - a) / sigt
+    expo = math.max(-50.0, math.min(50.0, -2.0 * mu * a / sig2))
+    term = math.exp(expo)
+    cdf1 = f_sigmoid(1.702 * x1)
+    cdf2 = f_sigmoid(1.702 * x2)
+    f_clamp(cdf1 + term * cdf2, 0.0, 1.0)
+
+f_frac_kelly(p, rr) =>
+    rr > 0 ? math.max(0.0, (p * (rr + 1.0) - 1.0) / rr) : 0.0
+
+// ========================= DATA =========================
+target = request.security(sym_target, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+target_v = request.security(sym_target, timeframe.period, volume, barmerge.gaps_off, barmerge.lookahead_off)
+kospi = request.security(sym_kospi, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+k200 = request.security(sym_k200, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+kosdaq = request.security(sym_kosdaq, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+usdk = request.security(sym_usdkrw, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+dxy = request.security(sym_dxy, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+vix = request.security(sym_vix, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+spx = request.security(sym_spx, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+ndx = request.security(sym_ndx, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+
+f1 = request.security(sym_fut1, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+v1 = request.security(sym_fut1, timeframe.period, volume, barmerge.gaps_off, barmerge.lookahead_off)
+f2 = request.security(sym_fut2, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+v2 = request.security(sym_fut2, timeframe.period, volume, barmerge.gaps_off, barmerge.lookahead_off)
+f3 = request.security(sym_fut3, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+v3 = request.security(sym_fut3, timeframe.period, volume, barmerge.gaps_off, barmerge.lookahead_off)
+futFront = (v1 > v2 and v1 > v3) ? f1 : (v2 > v1 and v2 > v3) ? f2 : f3
+basisProxy = f_nzdiv(futFront, k200)
+
+// ========================= STATES =========================
+[t_ma_fast, t_ma_mid, t_ma_slow, t_bull_stack, t_bear_stack] = f_ma_state(target, len_fast, len_mid, len_slow)
+[k_ma_fast, k_ma_mid, k_ma_slow, k_bull_stack, k_bear_stack] = f_ma_state(kospi, len_fast, len_mid, len_slow)
+
+ret_t = f_logret(target)
+ret_k = f_logret(kospi)
+ret_k200 = f_logret(k200)
+ret_kdq = f_logret(kosdaq)
+ret_spx = f_logret(spx)
+ret_ndx = f_logret(ndx)
+
+rv_t = f_realized_vol(ret_t, len_rv)
+rv_k = f_realized_vol(ret_k, len_rv)
+dnv_t = f_downside_vol(ret_t, len_rv)
+upv_t = f_upside_vol(ret_t, len_rv)
+dd_t = f_drawdown(target, len_draw)
+dd_k = f_drawdown(kospi, len_draw)
+
+rsLarge = f_nzdiv(k200, kospi)
+rsRisk = f_nzdiv(kosdaq, kospi)
+rsStock = f_nzdiv(target, kospi)
+rsKoreaUS = f_nzdiv(kospi, spx)
+
+usdZ = f_z(usdk, len_z)
+dxyZ = f_z(dxy, len_z)
+vixZ = f_z(vix, len_z)
+usdUp = usdk > ta.sma(usdk, len_z)
+macroStress = (dxyZ > 0 and vixZ > 0) or (usdZ > 0 and vixZ > 0)
+macroRelief = (dxyZ < 0 and vixZ < 0)
+
+rsLargeWeak = rsLarge < ta.sma(rsLarge, len_rs)
+rsRiskWeak = rsRisk < ta.sma(rsRisk, len_rs)
+rsStockWeak = rsStock < ta.sma(rsStock, len_rs)
+rsKoreaUSWeak = rsKoreaUS < ta.sma(rsKoreaUS, len_rs)
+
+rsLargeStrong = rsLarge > ta.sma(rsLarge, len_rs)
+rsRiskStrong = rsRisk > ta.sma(rsRisk, len_rs)
+rsStockStrong = rsStock > ta.sma(rsStock, len_rs)
+rsKoreaUSStrong = rsKoreaUS > ta.sma(rsKoreaUS, len_rs)
+
+// ========================= QUANT FEATURES =========================
+ewma_var_t = 0.0
+ewma_var_t := nz(ewma_var_t[1]) * ewma_lambda + (1.0 - ewma_lambda) * ret_t * ret_t
+ewma_var_k = 0.0
+ewma_var_k := nz(ewma_var_k[1]) * ewma_lambda + (1.0 - ewma_lambda) * ret_k * ret_k
+ewma_vol_t = math.sqrt(math.max(ewma_var_t, 0.0)) * math.sqrt(252.0)
+ewma_vol_k = math.sqrt(math.max(ewma_var_k, 0.0)) * math.sqrt(252.0)
+
+semi_ratio_t = rv_t > 0 ? dnv_t / rv_t : 0.0
+semi_ratio_k = rv_k > 0 ? f_downside_vol(ret_k, len_rv) / rv_k : 0.0
+
+beta_t_k = ta.correlation(ret_t, ret_k, len_resid) * (ta.stdev(ret_t, len_resid) / math.max(ta.stdev(ret_k, len_resid), 0.000001))
+resid_t = ret_t - beta_t_k * ret_k
+resid_z_t = f_z(resid_t, len_resid)
+resid_persist_up = math.sum(resid_t > 0 ? 1.0 : 0.0, len_impulse) / len_impulse
+resid_persist_dn = math.sum(resid_t < 0 ? 1.0 : 0.0, len_impulse) / len_impulse
+ou_gap = resid_z_t
+ou_revert_long = f_clamp(-ou_speed * math.min(ou_gap, 0.0), 0.0, 1.5)
+ou_revert_short = f_clamp(ou_speed * math.max(ou_gap, 0.0), 0.0, 1.5)
+
+foreignWeak = rsLargeWeak and usdUp
+basisWeak = basisProxy < ta.sma(basisProxy, len_vol)
+basisStrong = basisProxy > ta.sma(basisProxy, len_vol)
+instBreak = k200 < ta.sma(k200, len_fast)
+riskBreak = rsRiskWeak
+localStress = rv_k > ta.sma(rv_k, len_z)
+relativeWeak = rsKoreaUSWeak
+stockBreak = rsStockWeak and target < t_ma_mid
+volStress = target_v < ta.sma(target_v, len_vol) and target < t_ma_fast
+
+foreignReturn = rsLargeStrong and usdk < ta.sma(usdk, len_z)
+instRecover = k200 > ta.sma(k200, len_fast)
+riskRecover = rsRiskStrong
+localRelief = rv_k < ta.sma(rv_k, len_z)
+relativeRecover = rsKoreaUSStrong
+stockRecover = rsStockStrong and target > t_ma_mid
+volSupport = target_v > ta.sma(target_v, len_vol)
+
+corr_kr_us = ta.correlation(ret_k, ret_spx, len_corr)
+corr_stock_ndx = ta.correlation(ret_t, ret_ndx, len_corr)
+corr_k200_ndx = ta.correlation(ret_k200, ret_ndx, len_corr)
+dispersionRisk = (f_bool(corr_kr_us < ta.sma(corr_kr_us, len_rs)) + f_bool(corr_stock_ndx < ta.sma(corr_stock_ndx, len_rs)) + f_bool(corr_k200_ndx < ta.sma(corr_k200_ndx, len_rs))) / 3.0
+dispersionRelief = (f_bool(corr_kr_us > ta.sma(corr_kr_us, len_rs)) + f_bool(corr_stock_ndx > ta.sma(corr_stock_ndx, len_rs)) + f_bool(corr_k200_ndx > ta.sma(corr_k200_ndx, len_rs))) / 3.0
+
+barrier_up_prob = f_hit_up_prob(ta.sma(ret_t, len_impulse), ta.stdev(ret_t, len_rv), barrier_horizon / 252.0, barrier_move)
+barrier_dn_prob = f_hit_down_prob(ta.sma(ret_t, len_impulse), ta.stdev(ret_t, len_rv), barrier_horizon / 252.0, barrier_move)
+
+markov_risk_base = f_clamp((f_bool(foreignWeak) + f_bool(macroStress) + f_bool(localStress) + dispersionRisk) / 4.0, 0.0, 1.0)
+markov_relief_base = f_clamp((f_bool(foreignReturn) + f_bool(macroRelief) + f_bool(localRelief) + dispersionRelief) / 4.0, 0.0, 1.0)
+
+// ========================= SCORE ENGINE =========================
+scoreRiskOff = flow_w_fx * f_bool(foreignWeak) + flow_w_basis * f_bool(basisWeak) + flow_w_large * f_bool(instBreak) + flow_w_risk * f_bool(riskBreak) + flow_w_local * f_bool(localStress) + flow_w_macro * f_bool(macroStress) + flow_w_relative * f_bool(relativeWeak) + flow_w_stock * f_bool(stockBreak) + flow_w_corr * dispersionRisk + flow_w_volume * f_bool(volStress)
+
+scoreRebound = flow_w_fx * f_bool(foreignReturn) + flow_w_basis * f_bool(basisStrong) + flow_w_large * f_bool(instRecover) + flow_w_risk * f_bool(riskRecover) + flow_w_local * f_bool(localRelief) + flow_w_macro * f_bool(macroRelief) + flow_w_relative * f_bool(relativeRecover) + flow_w_stock * f_bool(stockRecover) + flow_w_corr * dispersionRelief + flow_w_volume * f_bool(volSupport)
+
+stock_rebound = f_rebound_strength(target, t_ma_fast, t_ma_mid)
+stock_trend = f_trend_strength(target, t_ma_fast, t_ma_mid, t_ma_slow)
+kospi_rebound = f_rebound_strength(kospi, k_ma_fast, k_ma_mid)
+kospi_trend = f_trend_strength(kospi, k_ma_fast, k_ma_mid, k_ma_slow)
+chop_t = f_chop_proxy(target, len_impulse)
+chop_k = f_chop_proxy(kospi, len_impulse)
+reclaim_fast = target > t_ma_fast and target[1] < t_ma_fast[1]
+lose_fast = target < t_ma_fast and target[1] > t_ma_fast[1]
+volume_expand = target_v > ta.sma(target_v, len_vol)
+downside_dom = dnv_t > upv_t
+upside_dom = upv_t > dnv_t
+
+scoreTrendLong = 1.1 * stock_trend + 0.8 * kospi_trend + 0.5 * f_bool(rsStockStrong) + 0.4 * f_bool(rsKoreaUSStrong) + 0.3 * f_bool(reclaim_fast) + 0.3 * f_bool(volume_expand) + 0.4 * f_clamp(resid_z_t, 0.0, 2.0) + 0.25 * resid_persist_up + 0.30 * barrier_up_prob + 0.25 * ou_revert_long - 0.7 * chop_t - 0.4 * f_bool(macroStress) - 0.35 * semi_ratio_t
+
+scoreTrendShort = 1.1 * f_bool(t_bear_stack) + 0.8 * f_bool(k_bear_stack) + 0.5 * f_bool(rsStockWeak) + 0.4 * f_bool(rsKoreaUSWeak) + 0.3 * f_bool(lose_fast) + 0.3 * f_bool(volume_expand) + 0.4 * f_clamp(-resid_z_t, 0.0, 2.0) + 0.25 * resid_persist_dn + 0.30 * barrier_dn_prob + 0.25 * ou_revert_short - 0.7 * chop_t - 0.4 * f_bool(macroRelief) - 0.35 * semi_ratio_t
+
+scoreReboundLong = 1.0 * stock_rebound + 0.8 * kospi_rebound + 0.5 * scoreRebound / 10.0 + 0.4 * f_bool(reclaim_fast) + 0.3 * barrier_up_prob + 0.2 * resid_persist_up + 0.2 * ou_revert_long - 0.5 * f_bool(macroStress) - 0.4 * dd_t
+
+scoreBreakdownShort = 1.0 * scoreRiskOff / 10.0 + 0.8 * f_bool(target < t_ma_mid) + 0.5 * f_bool(kospi < k_ma_mid) + 0.4 * f_bool(lose_fast) + 0.3 * barrier_dn_prob + 0.3 * semi_ratio_t + 0.2 * ou_revert_short - 0.3 * f_bool(macroRelief)
+
+// ========================= PROBABILITY ENGINE =========================
+priorRisk = f_prob((scoreRiskOff / 5.0) - 1.0 + semi_ratio_k + semi_ratio_t, prob_slope, prob_bias)
+priorRebound = f_prob(scoreReboundLong - 1.3 - dd_t, prob_slope, rebound_bias)
+priorLong = f_prob(scoreTrendLong - 1.2, prob_slope, trend_bias)
+priorShort = f_prob(scoreTrendShort - 1.2, prob_slope, trend_bias)
+
+markov_risk = nz(markov_alpha * priorRisk[1] + (1.0 - markov_alpha) * markov_risk_base, markov_risk_base)
+markov_relief = nz(markov_alpha * priorRebound[1] + (1.0 - markov_alpha) * markov_relief_base, markov_relief_base)
+
+llRisk = 0.30 * f_bool(foreignWeak) + 0.20 * f_bool(macroStress) + 0.15 * f_bool(localStress) + 0.10 * dispersionRisk + 0.10 * barrier_dn_prob + 0.15 * semi_ratio_k
+llRebound = 0.25 * f_bool(foreignReturn) + 0.15 * f_bool(macroRelief) + 0.15 * f_bool(localRelief) + 0.10 * dispersionRelief + 0.20 * barrier_up_prob + 0.15 * resid_persist_up
+llLong = 0.25 * stock_trend + 0.20 * kospi_trend + 0.15 * f_bool(reclaim_fast) + 0.15 * barrier_up_prob + 0.15 * f_clamp(resid_z_t, 0.0, 2.0) + 0.10 * ou_revert_long - 0.10 * chop_t
+llShort = 0.25 * f_bool(t_bear_stack) + 0.20 * f_bool(k_bear_stack) + 0.15 * f_bool(lose_fast) + 0.15 * barrier_dn_prob + 0.15 * f_clamp(-resid_z_t, 0.0, 2.0) + 0.10 * ou_revert_short - 0.10 * chop_t
+
+posteriorRisk = f_sigmoid(f_logit(priorRisk) + llRisk + markov_risk)
+posteriorRebound = f_sigmoid(f_logit(priorRebound) + llRebound + markov_relief)
+posteriorLong = f_sigmoid(f_logit(priorLong) + llLong - 0.6 * posteriorRisk)
+posteriorShort = f_sigmoid(f_logit(priorShort) + llShort + 0.6 * posteriorRisk)
+
+riskOffProb = posteriorRisk
+reboundProb = posteriorRebound
+trendLongProb = posteriorLong
+trendShortProb = posteriorShort
+
+riskBucket = f_rank_bucket(riskOffProb)
+reboundBucket = f_rank_bucket(reboundProb)
+trendLongBucket = f_rank_bucket(trendLongProb)
+trendShortBucket = f_rank_bucket(trendShortProb)
+
+rrLong = barrier_move / math.max(dd_t, 0.01)
+rrShort = barrier_move / 0.03
+kellyLong = f_clamp(f_frac_kelly(trendLongProb, rrLong) * kelly_fraction, 0.0, kelly_cap)
+kellyShort = f_clamp(f_frac_kelly(trendShortProb, rrShort) * kelly_fraction, 0.0, kelly_cap)
+
+// ========================= STATE MACHINE =========================
+var bool inRiskOff = false
+var bool inLongBias = false
+var bool inShortBias = false
+var int lastRiskOffBar = na
+var int lastLongBar = na
+var int lastShortBar = na
+
+cooldownRisk = na(lastRiskOffBar) or (bar_index - lastRiskOffBar >= cooldown_bars)
+cooldownLong = na(lastLongBar) or (bar_index - lastLongBar >= cooldown_bars)
+cooldownShort = na(lastShortBar) or (bar_index - lastShortBar >= cooldown_bars)
+
+exitSignal = false
+resetSignal = false
+entryPrep = false
+entrySignal = false
+exitPrep = false
+exitMajorSignal = false
+
+if barstate.isconfirmed
+    if (not inRiskOff) and cooldownRisk and riskOffProb >= risk_enter and scoreRiskOff >= score_enter
+        inRiskOff := true
+        inLongBias := false
+        inShortBias := true
+        lastRiskOffBar := bar_index
+        lastShortBar := bar_index
+        exitSignal := true
+        exitPrep := true
+
+    if inRiskOff and reboundProb >= risk_exit and scoreRebound >= score_reset
+        inRiskOff := false
+        inShortBias := false
+        resetSignal := true
+        entryPrep := true
+
+    if (not inRiskOff) and cooldownLong and trendLongProb >= long_enter and posteriorLong >= posterior_floor and scoreTrendLong >= score_enter and t_bull_stack and k_bull_stack
+        inLongBias := true
+        inShortBias := false
+        lastLongBar := bar_index
+        entryPrep := true
+
+    if cooldownShort and trendShortProb >= short_enter and posteriorShort >= breakdown_floor and scoreTrendShort >= score_enter and t_bear_stack and k_bear_stack
+        inShortBias := true
+        inLongBias := false
+        lastShortBar := bar_index
+        exitPrep := true
+
+    if inLongBias and (bar_index - nz(lastLongBar, bar_index) <= confirm_window) and reclaim_fast and volume_expand and trendLongProb >= long_enter
+        entrySignal := true
+
+    if inShortBias and (bar_index - nz(lastShortBar, bar_index) <= confirm_window) and lose_fast and volume_expand and trendShortProb >= short_enter
+        exitMajorSignal := true
+
+    if inLongBias and trendLongProb < trend_floor
+        inLongBias := false
+
+    if inShortBias and trendShortProb < trend_floor
+        inShortBias := false
+
+    if chop_t > chop_ceiling and chop_k > chop_ceiling
+        inLongBias := false
+        inShortBias := false
+
+// ========================= PLOTS =========================
+plot(show_scores ? scoreRiskOff : na, "RiskOff Score", color=color.red)
+plot(show_scores ? scoreRebound : na, "Rebound Score", color=color.green)
+plot(show_scores ? scoreTrendLong : na, "Trend Long Score", color=color.teal)
+plot(show_scores ? scoreTrendShort : na, "Trend Short Score", color=color.orange)
+plot(show_scores ? riskOffProb : na, "RiskOff Prob", color=color.new(color.red, 0))
+plot(show_scores ? reboundProb : na, "Rebound Prob", color=color.new(color.green, 0))
+plot(show_scores ? trendLongProb : na, "TrendLong Prob", color=color.new(color.teal, 0))
+plot(show_scores ? trendShortProb : na, "TrendShort Prob", color=color.new(color.orange, 0))
+
+plotshape(show_exit and exitSignal, location=location.abovebar, style=shape.labeldown, text="이탈", color=color.rgb(255, 0, 0), textcolor=color.black, size=size.tiny)
+plotshape(show_rebound and resetSignal, location=location.belowbar, style=shape.labelup, text="진입", color=color.rgb(0, 180, 0), textcolor=color.black, size=size.tiny)
+plotshape(show_rebound and entryPrep, location=location.belowbar, style=shape.circle, text="C", color=color.new(color.green, 0), textcolor=color.black, size=size.tiny)
+plotshape(show_rebound and entrySignal, location=location.belowbar, style=shape.labelup, text="진입", color=color.new(color.lime, 0), textcolor=color.black, size=size.small)
+plotshape(show_exit and exitPrep, location=location.abovebar, style=shape.circle, text="C", color=color.new(color.orange, 0), textcolor=color.black, size=size.tiny)
+plotshape(show_exit and exitMajorSignal, location=location.abovebar, style=shape.labeldown, text="이탈", color=color.new(color.red, 0), textcolor=color.black, size=size.small)
+plotshape(show_trend and entrySignal, location=location.belowbar, style=shape.triangleup, text="E", color=color.new(color.green, 0), textcolor=color.black, size=size.tiny)
+plotshape(show_short and exitMajorSignal, location=location.abovebar, style=shape.triangledown, text="X", color=color.new(color.red, 0), textcolor=color.black, size=size.tiny)
+
+candle_reversal_color = exitMajorSignal or inRiskOff or inShortBias ? color.new(color.red, 0) : entrySignal or inLongBias ? color.new(color.lime, 0) : na
+barcolor(candle_reversal_color)
+
+bgcolor(show_bg ? (inRiskOff ? color.new(color.red, 86) : inLongBias ? color.new(color.green, 90) : inShortBias ? color.new(color.orange, 90) : na) : na)
+
+// ========================= TABLE =========================
+var table t = table.new(f_table_pos(table_pos), 4, 20, border_width=1)
+
+if barstate.islast and show_table
+    table.cell(t, 0, 0, "모델", bgcolor=color.rgb(30,30,30), text_color=color.white)
+    table.cell(t, 1, 0, "값", bgcolor=color.rgb(30,30,30), text_color=color.white)
+    table.cell(t, 2, 0, "버킷", bgcolor=color.rgb(30,30,30), text_color=color.white)
+    table.cell(t, 3, 0, "상태", bgcolor=color.rgb(30,30,30), text_color=color.white)
+
+    table.cell(t, 0, 1, "RiskOffProb")
+    table.cell(t, 1, 1, str.tostring(riskOffProb, "#.00"), bgcolor=f_prob_color(riskOffProb))
+    table.cell(t, 2, 1, str.tostring(riskBucket))
+    table.cell(t, 3, 1, inRiskOff ? "ON" : "OFF", bgcolor=inRiskOff ? color.new(color.red, 0) : color.new(color.gray, 60))
+
+    table.cell(t, 0, 2, "ReboundProb")
+    table.cell(t, 1, 2, str.tostring(reboundProb, "#.00"), bgcolor=f_prob_color(reboundProb))
+    table.cell(t, 2, 2, str.tostring(reboundBucket))
+    table.cell(t, 3, 2, entryPrep ? "READY" : "-", bgcolor=entryPrep ? color.new(color.green, 0) : color.new(color.gray, 80))
+
+    table.cell(t, 0, 3, "TrendLongProb")
+    table.cell(t, 1, 3, str.tostring(trendLongProb, "#.00"), bgcolor=f_prob_color(trendLongProb))
+    table.cell(t, 2, 3, str.tostring(trendLongBucket))
+    table.cell(t, 3, 3, entrySignal ? "ENTRY" : "-", bgcolor=entrySignal ? color.new(color.lime, 0) : color.new(color.gray, 80))
+
+    table.cell(t, 0, 4, "TrendShortProb")
+    table.cell(t, 1, 4, str.tostring(trendShortProb, "#.00"), bgcolor=f_prob_color(trendShortProb))
+    table.cell(t, 2, 4, str.tostring(trendShortBucket))
+    table.cell(t, 3, 4, exitMajorSignal ? "EXIT" : "-", bgcolor=exitMajorSignal ? color.new(color.red, 0) : color.new(color.gray, 80))
+
+    table.cell(t, 0, 5, "Residual Z")
+    table.cell(t, 1, 5, str.tostring(resid_z_t, "#.00"))
+    table.cell(t, 2, 5, resid_z_t > 0 ? "UP" : "DN")
+    table.cell(t, 3, 5, str.tostring(resid_persist_up, "#.00"))
+
+    table.cell(t, 0, 6, "Barrier Up")
+    table.cell(t, 1, 6, str.tostring(barrier_up_prob, "#.00"))
+    table.cell(t, 2, 6, "Up")
+    table.cell(t, 3, 6, str.tostring(barrier_dn_prob, "#.00"))
+
+    table.cell(t, 0, 7, "EWMA Vol")
+    table.cell(t, 1, 7, str.tostring(ewma_vol_t, "#.00"))
+    table.cell(t, 2, 7, semi_ratio_t > 1 ? "DownDom" : "Balanced")
+    table.cell(t, 3, 7, str.tostring(ewma_vol_k, "#.00"))
+
+    table.cell(t, 0, 8, "Basis")
+    table.cell(t, 1, 8, str.tostring(basisProxy, "#.000"))
+    table.cell(t, 2, 8, basisWeak ? "Discount" : basisStrong ? "Premium" : "Neutral")
+    table.cell(t, 3, 8, str.tostring(v1 > v2 and v1 > v3 ? 1 : v2 > v1 and v2 > v3 ? 2 : 3))
+
+    table.cell(t, 0, 9, "USDKRW")
+    table.cell(t, 1, 9, str.tostring(usdk, "#.0"))
+    table.cell(t, 2, 9, usdUp ? "UP" : "DN")
+    table.cell(t, 3, 9, str.tostring(usdZ, "#.00"))
+
+    table.cell(t, 0, 10, "VIX / DXY")
+    table.cell(t, 1, 10, str.tostring(vix, "#.0") + " / " + str.tostring(dxy, "#.0"))
+    table.cell(t, 2, 10, macroStress ? "Stress" : macroRelief ? "Relief" : "Mixed")
+    table.cell(t, 3, 10, str.tostring(vixZ, "#.00"))
+
+    table.cell(t, 0, 11, "Stock RS")
+    table.cell(t, 1, 11, str.tostring(rsStock, "#.000"))
+    table.cell(t, 2, 11, rsStockStrong ? "강" : rsStockWeak ? "약" : "중")
+    table.cell(t, 3, 11, target > t_ma_mid ? "Above" : "Below")
+
+    table.cell(t, 0, 12, "Korea/US RS")
+    table.cell(t, 1, 12, str.tostring(rsKoreaUS, "#.000"))
+    table.cell(t, 2, 12, rsKoreaUSStrong ? "강" : rsKoreaUSWeak ? "약" : "중")
+    table.cell(t, 3, 12, str.tostring(corr_kr_us, "#.00"))
+
+    table.cell(t, 0, 13, "Chop")
+    table.cell(t, 1, 13, str.tostring(chop_t, "#.00"))
+    table.cell(t, 2, 13, chop_t > chop_ceiling ? "High" : "Low")
+    table.cell(t, 3, 13, str.tostring(chop_k, "#.00"))
+
+    table.cell(t, 0, 14, "Drawdown")
+    table.cell(t, 1, 14, str.tostring(dd_t * 100.0, "#.0") + "%")
+    table.cell(t, 2, 14, dd_t > 0.06 ? "Warn" : "OK")
+    table.cell(t, 3, 14, str.tostring(dd_k * 100.0, "#.0") + "%")
+
+    table.cell(t, 0, 15, "Kelly")
+    table.cell(t, 1, 15, str.tostring(kellyLong, "#.000"))
+    table.cell(t, 2, 15, "Long")
+    table.cell(t, 3, 15, str.tostring(kellyShort, "#.000"))
+
+    table.cell(t, 0, 16, "Signal")
+    table.cell(t, 1, 16, entrySignal ? "진입" : exitMajorSignal ? "이탈" : exitSignal ? "이탈주의" : resetSignal ? "진입주의" : "-")
+    table.cell(t, 2, 16, inLongBias ? "LongBias" : inShortBias ? "ShortBias" : inRiskOff ? "RiskOff" : "Neutral")
+    table.cell(t, 3, 16, barstate.isconfirmed ? "CONF" : "LIVE")
+
+    table.cell(t, 0, 17, "Target")
+    table.cell(t, 1, 17, str.tostring(target, "#"))
+    table.cell(t, 2, 17, target > t_ma_fast ? "AboveF" : "BelowF")
+    table.cell(t, 3, 17, target > t_ma_mid ? "AboveM" : "BelowM")
+
+    table.cell(t, 0, 18, "Risk Score")
+    table.cell(t, 1, 18, str.tostring(scoreRiskOff, "#.00"))
+    table.cell(t, 2, 18, str.tostring(scoreRebound, "#.00"))
+    table.cell(t, 3, 18, str.tostring(scoreTrendLong, "#.00"))
+
+    table.cell(t, 0, 19, "Short Score")
+    table.cell(t, 1, 19, str.tostring(scoreTrendShort, "#.00"))
+    table.cell(t, 2, 19, str.tostring(scoreBreakdownShort, "#.00"))
+    table.cell(t, 3, 19, str.tostring(posteriorRisk, "#.00"))
+
+// ========================= ALERTS =========================
+alertcondition(exitSignal, title="KRX Exit Signal", message="KRX Exit Signal: Korean market structural breakdown detected")
+alertcondition(resetSignal, title="KRX Entry Signal", message="KRX Entry Signal: Korean market structural recovery detected")
+alertcondition(entryPrep, title="KRX Entry Prep", message="KRX Entry Prep: recovery conditions are building")
+alertcondition(entrySignal, title="KRX Entry Signal", message="KRX Entry Signal: foreign-flow recovery / reversal confirmed")
+alertcondition(exitPrep, title="KRX Exit Prep", message="KRX Exit Prep: foreign-flow deterioration is building")
+alertcondition(exitMajorSignal, title="KRX Exit Major Signal", message="KRX Exit Major Signal: foreign-flow exit / drawdown risk confirmed")
